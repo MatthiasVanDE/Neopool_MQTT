@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "NeoPool MQTT Controller",
+        "description": "Configureer je NeoPool controller verbonden via Tasmota MQTT.",
+        "data": {
+          "device_name": "Apparaatnaam",
+          "mqtt_topic": "Tasmota MQTT Topic"
+        },
+        "data_description": {
+          "device_name": "Een vriendelijke naam voor je zwembadcontroller (bijv. 'Zwembad', 'Pool').",
+          "mqtt_topic": "Het MQTT topic van je Tasmota apparaat (bijv. 'SmartPool'). Dit moet overeenkomen met de Topic instelling in Tasmota."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Dit MQTT topic is al geconfigureerd."
+    }
+  }
+}
