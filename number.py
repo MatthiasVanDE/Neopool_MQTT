@@ -1,22 +1,140 @@
 """Number platform for NeoPool MQTT Controller."""
 from __future__ import annotations
 
-from homeassistant.components.number import NumberEntity, NumberMode
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+from homeassistant.components.number import (
+    NumberEntity,
+    NumberEntityDescription,
+    NumberMode,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
-    DOMAIN,
-    CMD_NPPHMIN,
-    CMD_NPPHMAX,
-    CMD_NPREDOX,
+    CMD_NPCHLORINE,
     CMD_NPHYDROLYSIS,
     CMD_NPIONIZATION,
-    CMD_NPCHLORINE,
+    CMD_NPPHMAX,
+    CMD_NPPHMIN,
+    CMD_NPREDOX,
+    DOMAIN,
 )
-from .entity import NeoPoolEntity
 from .coordinator import NeoPoolCoordinator
+from .entity import NeoPoolEntity
+
+
+@dataclass(frozen=True, kw_only=True)
+class NeoPoolNumberDescription(NumberEntityDescription):
+    """Description of a NeoPool number entity."""
+
+    command: str
+    value_fn: Callable[[dict[str, Any]], Any]
+    is_integer: bool = False
+    max_fn: Callable[[dict[str, Any]], float] | None = None
+    unit_fn: Callable[[dict[str, Any]], str | None] | None = None
+    available_fn: Callable[[dict[str, Any]], bool] | None = None
+
+
+def _path(*keys: str) -> Callable[[dict[str, Any]], Any]:
+    def get(data: dict[str, Any]) -> Any:
+        node: Any = data
+        for key in keys:
+            if not isinstance(node, dict):
+                return None
+            node = node.get(key)
+        return node
+
+    return get
+
+
+def _hydrolysis_unit(data: dict[str, Any]) -> str:
+    return (data.get("Hydrolysis") or {}).get("Unit") or "%"
+
+
+def _hydrolysis_max(data: dict[str, Any]) -> float:
+    return (data.get("Hydrolysis") or {}).get("Max") or 100
+
+
+def _ionization_max(data: dict[str, Any]) -> float:
+    return (data.get("Ionization") or {}).get("Max") or 100
+
+
+NUMBERS: tuple[NeoPoolNumberDescription, ...] = (
+    NeoPoolNumberDescription(
+        key="ph_min",
+        name="pH Min Setpoint",
+        command=CMD_NPPHMIN,
+        native_min_value=0.0,
+        native_max_value=14.0,
+        native_step=0.1,
+        icon="mdi:ph",
+        value_fn=_path("pH", "Min"),
+    ),
+    NeoPoolNumberDescription(
+        key="ph_max",
+        name="pH Max Setpoint",
+        command=CMD_NPPHMAX,
+        native_min_value=0.0,
+        native_max_value=14.0,
+        native_step=0.1,
+        icon="mdi:ph",
+        value_fn=_path("pH", "Max"),
+    ),
+    NeoPoolNumberDescription(
+        key="redox_setpoint_number",
+        name="Redox Setpoint",
+        command=CMD_NPREDOX,
+        native_min_value=0,
+        native_max_value=1000,
+        native_step=1,
+        native_unit_of_measurement="mV",
+        icon="mdi:flash",
+        value_fn=_path("Redox", "Setpoint"),
+        is_integer=True,
+    ),
+    NeoPoolNumberDescription(
+        key="hydrolysis_setpoint",
+        name="Hydrolysis Setpoint",
+        command=CMD_NPHYDROLYSIS,
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        icon="mdi:water-percent",
+        value_fn=_path("Hydrolysis", "Setpoint"),
+        is_integer=True,
+        max_fn=_hydrolysis_max,
+        unit_fn=_hydrolysis_unit,
+    ),
+    NeoPoolNumberDescription(
+        key="ionization_setpoint",
+        name="Ionization Setpoint",
+        command=CMD_NPIONIZATION,
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        icon="mdi:atom",
+        value_fn=_path("Ionization", "Setpoint"),
+        is_integer=True,
+        max_fn=_ionization_max,
+        available_fn=lambda data: data.get("Ionization") is not None,
+    ),
+    NeoPoolNumberDescription(
+        key="chlorine_setpoint",
+        name="Chlorine Setpoint",
+        command=CMD_NPCHLORINE,
+        native_min_value=0.0,
+        native_max_value=10.0,
+        native_step=0.1,
+        native_unit_of_measurement="ppm",
+        icon="mdi:flask-round-bottom",
+        value_fn=_path("Chlorine", "Setpoint"),
+        available_fn=lambda data: data.get("Chlorine") is not None,
+    ),
+)
 
 
 async def async_setup_entry(
@@ -24,143 +142,51 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up NeoPool numbers from config entry."""
     coordinator: NeoPoolCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-
-    entities = [
-        NeoPoolPHMinNumber(coordinator),
-        NeoPoolPHMaxNumber(coordinator),
-        NeoPoolRedoxSetpointNumber(coordinator),
-        NeoPoolHydrolysisSetpointNumber(coordinator),
-        NeoPoolIonizationSetpointNumber(coordinator),
-        NeoPoolChlorineSetpointNumber(coordinator),
-    ]
-
-    async_add_entities(entities)
+    async_add_entities(NeoPoolNumber(coordinator, desc) for desc in NUMBERS)
 
 
 class NeoPoolNumber(NeoPoolEntity, NumberEntity):
-    """Base NeoPool number."""
+    """Generic NeoPool number entity driven by a description."""
 
+    entity_description: NeoPoolNumberDescription
     _attr_mode = NumberMode.BOX
 
-    def __init__(self, coordinator, key, name, command, **kwargs):
-        super().__init__(coordinator, key, name)
-        self._command = command
-        self._attr_native_min_value = kwargs.get("min_value", 0)
-        self._attr_native_max_value = kwargs.get("max_value", 100)
-        self._attr_native_step = kwargs.get("step", 0.1)
-        self._attr_native_unit_of_measurement = kwargs.get("unit")
-        self._attr_icon = kwargs.get("icon")
-        self._attr_entity_registry_enabled_default = kwargs.get("enabled_default", True)
+    def __init__(
+        self, coordinator: NeoPoolCoordinator, description: NeoPoolNumberDescription
+    ) -> None:
+        super().__init__(coordinator, description.key, description.name)
+        self.entity_description = description
+
+    @property
+    def native_value(self) -> float | None:
+        return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def native_max_value(self) -> float:
+        if self.entity_description.max_fn is not None:
+            return self.entity_description.max_fn(self.coordinator.data)
+        return self.entity_description.native_max_value
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        if self.entity_description.unit_fn is not None:
+            return self.entity_description.unit_fn(self.coordinator.data)
+        return self.entity_description.native_unit_of_measurement
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        if self.entity_description.available_fn is not None:
+            return self.entity_description.available_fn(self.coordinator.data)
+        return True
 
     async def async_set_native_value(self, value: float) -> None:
-        """Set the value."""
-        await self.coordinator.async_send_command(self._command, str(value))
-
-
-class NeoPoolPHMinNumber(NeoPoolNumber):
-    """pH minimum setpoint."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "ph_min", "pH Min Setpoint",
-                         CMD_NPPHMIN,
-                         min_value=0.0, max_value=14.0, step=0.1,
-                         icon="mdi:ph")
-
-    @property
-    def native_value(self) -> float | None:
-        return self.coordinator.data.get("pH", {}).get("Min")
-
-
-class NeoPoolPHMaxNumber(NeoPoolNumber):
-    """pH maximum setpoint."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "ph_max", "pH Max Setpoint",
-                         CMD_NPPHMAX,
-                         min_value=0.0, max_value=14.0, step=0.1,
-                         icon="mdi:ph")
-
-    @property
-    def native_value(self) -> float | None:
-        return self.coordinator.data.get("pH", {}).get("Max")
-
-
-class NeoPoolRedoxSetpointNumber(NeoPoolNumber):
-    """Redox setpoint."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "redox_setpoint_number", "Redox Setpoint",
-                         CMD_NPREDOX,
-                         min_value=0, max_value=1000, step=1,
-                         unit="mV",
-                         icon="mdi:flash")
-
-    @property
-    def native_value(self) -> float | None:
-        return self.coordinator.data.get("Redox", {}).get("Setpoint")
-
-
-class NeoPoolHydrolysisSetpointNumber(NeoPoolNumber):
-    """Hydrolysis setpoint."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "hydrolysis_setpoint", "Hydrolysis Setpoint",
-                         CMD_NPHYDROLYSIS,
-                         min_value=0, max_value=100, step=1,
-                         icon="mdi:water-percent")
-
-    @property
-    def native_value(self) -> float | None:
-        return self.coordinator.data.get("Hydrolysis", {}).get("Setpoint")
-
-    @property
-    def native_unit_of_measurement(self):
-        unit = self.coordinator.data.get("Hydrolysis", {}).get("Unit")
-        return unit if unit else "%"
-
-    @property
-    def native_max_value(self):
-        return self.coordinator.data.get("Hydrolysis", {}).get("Max", 100)
-
-
-class NeoPoolIonizationSetpointNumber(NeoPoolNumber):
-    """Ionization setpoint."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "ionization_setpoint", "Ionization Setpoint",
-                         CMD_NPIONIZATION,
-                         min_value=0, max_value=100, step=1,
-                         icon="mdi:atom")
-
-    @property
-    def native_value(self) -> float | None:
-        return self.coordinator.data.get("Ionization", {}).get("Setpoint")
-
-    @property
-    def native_max_value(self):
-        return self.coordinator.data.get("Ionization", {}).get("Max", 100)
-
-    @property
-    def available(self):
-        return super().available and self.coordinator.data.get("Ionization") is not None
-
-
-class NeoPoolChlorineSetpointNumber(NeoPoolNumber):
-    """Chlorine setpoint."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "chlorine_setpoint", "Chlorine Setpoint",
-                         CMD_NPCHLORINE,
-                         min_value=0.0, max_value=10.0, step=0.1,
-                         unit="ppm",
-                         icon="mdi:flask-round-bottom")
-
-    @property
-    def native_value(self) -> float | None:
-        return self.coordinator.data.get("Chlorine", {}).get("Setpoint")
-
-    @property
-    def available(self):
-        return super().available and self.coordinator.data.get("Chlorine") is not None
+        if self.entity_description.is_integer:
+            payload = str(int(round(value)))
+        else:
+            payload = f"{value:g}"
+        await self.coordinator.async_send_command(
+            self.entity_description.command, payload
+        )

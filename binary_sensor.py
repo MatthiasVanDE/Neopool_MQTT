@@ -1,17 +1,99 @@
 """Binary sensor platform for NeoPool MQTT Controller."""
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
 from homeassistant.components.binary_sensor import (
-    BinarySensorEntity,
     BinarySensorDeviceClass,
+    BinarySensorEntity,
+    BinarySensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
-from .entity import NeoPoolEntity
 from .coordinator import NeoPoolCoordinator
+from .entity import NeoPoolEntity
+
+
+@dataclass(frozen=True, kw_only=True)
+class NeoPoolBinarySensorDescription(BinarySensorEntityDescription):
+    """Description of a NeoPool binary sensor."""
+
+    is_on_fn: Callable[[dict[str, Any]], bool | None]
+
+
+def _ph_alarm(data: dict[str, Any]) -> bool | None:
+    state = (data.get("pH") or {}).get("State")
+    return state is not None and state != 0
+
+
+def _eq(path: tuple[str, ...], target: int) -> Callable[[dict[str, Any]], bool | None]:
+    def get(data: dict[str, Any]) -> bool | None:
+        node: Any = data
+        for key in path:
+            if not isinstance(node, dict):
+                return None
+            node = node.get(key)
+        if node is None:
+            return None
+        return node == target
+
+    return get
+
+
+BINARY_SENSORS: tuple[NeoPoolBinarySensorDescription, ...] = (
+    NeoPoolBinarySensorDescription(
+        key="ph_alarm",
+        name="pH Alarm",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        icon="mdi:alert",
+        is_on_fn=_ph_alarm,
+    ),
+    NeoPoolBinarySensorDescription(
+        key="ph_tank_empty",
+        name="pH Tank Empty",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        icon="mdi:cup-water",
+        is_on_fn=_eq(("pH", "Tank"), 0),
+    ),
+    NeoPoolBinarySensorDescription(
+        key="ph_flow",
+        name="pH Flow Detection",
+        icon="mdi:waves",
+        is_on_fn=_eq(("pH", "FL1"), 1),
+    ),
+    NeoPoolBinarySensorDescription(
+        key="hydrolysis_flow_alarm",
+        name="Hydrolysis Flow Alarm",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        icon="mdi:waves-arrow-up",
+        is_on_fn=_eq(("Hydrolysis", "FL1"), 1),
+    ),
+    NeoPoolBinarySensorDescription(
+        key="hydrolysis_low_alarm",
+        name="Hydrolysis Low Alarm",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        icon="mdi:alert-circle",
+        is_on_fn=_eq(("Hydrolysis", "Low"), 1),
+    ),
+    NeoPoolBinarySensorDescription(
+        key="cover_active",
+        name="Cover Active",
+        icon="mdi:shield-sun",
+        is_on_fn=_eq(("Hydrolysis", "Cover"), 1),
+    ),
+    NeoPoolBinarySensorDescription(
+        key="filtration_running",
+        name="Filtration Running",
+        device_class=BinarySensorDeviceClass.RUNNING,
+        icon="mdi:pump",
+        is_on_fn=_eq(("Filtration", "State"), 1),
+    ),
+)
 
 
 async def async_setup_entry(
@@ -19,123 +101,25 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up NeoPool binary sensors from config entry."""
     coordinator: NeoPoolCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-
-    entities = [
-        NeoPoolPHAlarmBinarySensor(coordinator),
-        NeoPoolPHTankEmptyBinarySensor(coordinator),
-        NeoPoolPHFlowBinarySensor(coordinator),
-        NeoPoolHydrolysisFlowAlarmBinarySensor(coordinator),
-        NeoPoolHydrolysisLowAlarmBinarySensor(coordinator),
-        NeoPoolHydrolysisCoverBinarySensor(coordinator),
-        NeoPoolFiltrationRunningBinarySensor(coordinator),
-    ]
-
-    async_add_entities(entities)
+    async_add_entities(
+        NeoPoolBinarySensor(coordinator, desc) for desc in BINARY_SENSORS
+    )
 
 
 class NeoPoolBinarySensor(NeoPoolEntity, BinarySensorEntity):
-    """Base NeoPool binary sensor."""
+    """Generic NeoPool binary sensor driven by a description."""
 
-    def __init__(self, coordinator, key, name, **kwargs):
-        super().__init__(coordinator, key, name)
-        self._attr_device_class = kwargs.get("device_class")
-        self._attr_icon = kwargs.get("icon")
-        self._attr_entity_registry_enabled_default = kwargs.get("enabled_default", True)
+    entity_description: NeoPoolBinarySensorDescription
 
-
-class NeoPoolPHAlarmBinarySensor(NeoPoolBinarySensor):
-    """pH alarm state."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "ph_alarm", "pH Alarm",
-                         device_class=BinarySensorDeviceClass.PROBLEM,
-                         icon="mdi:alert")
+    def __init__(
+        self,
+        coordinator: NeoPoolCoordinator,
+        description: NeoPoolBinarySensorDescription,
+    ) -> None:
+        super().__init__(coordinator, description.key, description.name)
+        self.entity_description = description
 
     @property
     def is_on(self) -> bool | None:
-        state = self.coordinator.data.get("pH", {}).get("State")
-        return state is not None and state != 0
-
-
-class NeoPoolPHTankEmptyBinarySensor(NeoPoolBinarySensor):
-    """pH tank empty alarm."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "ph_tank_empty", "pH Tank Empty",
-                         device_class=BinarySensorDeviceClass.PROBLEM,
-                         icon="mdi:cup-water")
-
-    @property
-    def is_on(self) -> bool | None:
-        tank = self.coordinator.data.get("pH", {}).get("Tank")
-        return tank == 0 if tank is not None else None
-
-
-class NeoPoolPHFlowBinarySensor(NeoPoolBinarySensor):
-    """pH flow detection."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "ph_flow", "pH Flow Detection",
-                         icon="mdi:waves")
-
-    @property
-    def is_on(self) -> bool | None:
-        fl1 = self.coordinator.data.get("pH", {}).get("FL1")
-        return fl1 == 1 if fl1 is not None else None
-
-
-class NeoPoolHydrolysisFlowAlarmBinarySensor(NeoPoolBinarySensor):
-    """Hydrolysis flow alarm."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "hydrolysis_flow_alarm", "Hydrolysis Flow Alarm",
-                         device_class=BinarySensorDeviceClass.PROBLEM,
-                         icon="mdi:waves-arrow-up")
-
-    @property
-    def is_on(self) -> bool | None:
-        fl1 = self.coordinator.data.get("Hydrolysis", {}).get("FL1")
-        return fl1 == 1 if fl1 is not None else None
-
-
-class NeoPoolHydrolysisLowAlarmBinarySensor(NeoPoolBinarySensor):
-    """Hydrolysis low production alarm."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "hydrolysis_low_alarm", "Hydrolysis Low Alarm",
-                         device_class=BinarySensorDeviceClass.PROBLEM,
-                         icon="mdi:alert-circle")
-
-    @property
-    def is_on(self) -> bool | None:
-        low = self.coordinator.data.get("Hydrolysis", {}).get("Low")
-        return low == 1 if low is not None else None
-
-
-class NeoPoolHydrolysisCoverBinarySensor(NeoPoolBinarySensor):
-    """Pool cover active."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "cover_active", "Cover Active",
-                         icon="mdi:shield-sun")
-
-    @property
-    def is_on(self) -> bool | None:
-        cover = self.coordinator.data.get("Hydrolysis", {}).get("Cover")
-        return cover == 1 if cover is not None else None
-
-
-class NeoPoolFiltrationRunningBinarySensor(NeoPoolBinarySensor):
-    """Filtration pump running."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator, "filtration_running", "Filtration Running",
-                         device_class=BinarySensorDeviceClass.RUNNING,
-                         icon="mdi:pump")
-
-    @property
-    def is_on(self) -> bool | None:
-        state = self.coordinator.data.get("Filtration", {}).get("State")
-        return state == 1 if state is not None else None
+        return self.entity_description.is_on_fn(self.coordinator.data)

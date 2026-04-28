@@ -10,10 +10,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
+    BOOST_MODES_REVERSE,
     DOMAIN,
-    TOPIC_TELE_SENSOR,
-    TOPIC_STAT_RESULT,
+    FILTRATION_MODES_REVERSE,
+    FILTRATION_SPEEDS_REVERSE,
+    MANUFACTURER,
     TOPIC_CMND,
+    TOPIC_STAT_RESULT,
+    TOPIC_TELE_SENSOR,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,11 +25,43 @@ _LOGGER = logging.getLogger(__name__)
 SIGNAL_NEOPOOL_UPDATE = f"{DOMAIN}_update"
 
 
+def _on_off_to_int(value: Any) -> int | None:
+    """Convert Tasmota ON/OFF (case-insensitive) or 0/1 to int."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        upper = value.strip().upper()
+        if upper in ("ON", "1", "TRUE"):
+            return 1
+        if upper in ("OFF", "0", "FALSE"):
+            return 0
+    return None
+
+
+def _label_to_int(value: Any, label_to_key: dict[str, int]) -> int | None:
+    """Look up an int key by case-insensitive label, or accept an int directly."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    if isinstance(value, str):
+        upper = value.strip().upper()
+        for label, key in label_to_key.items():
+            if label.upper() == upper:
+                return key
+    return None
+
+
 class NeoPoolCoordinator:
     """Coordinate NeoPool MQTT data."""
 
-    def __init__(self, hass: HomeAssistant, mqtt_topic: str, device_name: str, entry_id: str) -> None:
-        """Initialize the coordinator."""
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        mqtt_topic: str,
+        device_name: str,
+        entry_id: str,
+    ) -> None:
         self.hass = hass
         self.mqtt_topic = mqtt_topic
         self.device_name = device_name
@@ -37,159 +73,36 @@ class NeoPoolCoordinator:
 
     @property
     def available(self) -> bool:
-        """Return True if data is available."""
         return self._available
 
     @property
+    def signal(self) -> str:
+        return f"{SIGNAL_NEOPOOL_UPDATE}_{self.entry_id}"
+
+    @property
     def device_info(self) -> dict[str, Any]:
-        """Return device info."""
-        info = {
+        info: dict[str, Any] = {
             "identifiers": {(DOMAIN, self.mqtt_topic)},
             "name": self.device_name,
-            "manufacturer": "Sugar Valley",
+            "manufacturer": MANUFACTURER,
             "model": self.data.get("Type", "NeoPool"),
         }
-        fw = self.data.get("Powerunit", {}).get("Version")
-        if fw:
-            info["sw_version"] = fw
-        node_id = self.data.get("Powerunit", {}).get("NodeID")
-        if node_id:
-            info["serial_number"] = node_id
+        powerunit = self.data.get("Powerunit") or {}
+        if powerunit.get("Version"):
+            info["sw_version"] = powerunit["Version"]
+        if powerunit.get("NodeID"):
+            info["serial_number"] = powerunit["NodeID"]
         return info
 
     async def async_setup(self) -> None:
-        """Set up MQTT subscriptions."""
         sensor_topic = TOPIC_TELE_SENSOR.format(self.mqtt_topic)
         result_topic = TOPIC_STAT_RESULT.format(self.mqtt_topic)
 
-        @callback
-        def _sensor_message_received(msg):
-            """Handle sensor MQTT message."""
-            try:
-                payload = json.loads(msg.payload)
-            except (json.JSONDecodeError, TypeError):
-                _LOGGER.warning("Invalid JSON in SENSOR message: %s", msg.payload)
-                return
-
-            neopool_data = payload.get("NeoPool")
-            if neopool_data is None:
-                return
-
-            self.data = neopool_data
-            self._available = True
-            async_dispatcher_send(self.hass, f"{SIGNAL_NEOPOOL_UPDATE}_{self.entry_id}")
-
-        @callback
-        def _result_message_received(msg):
-            """Handle result MQTT message for command responses."""
-            try:
-                payload = json.loads(msg.payload)
-            except (json.JSONDecodeError, TypeError):
-                return
-
-            # Update relevant data from command results
-            updated = False
-
-            if "NPFiltration" in payload:
-                filt_val = payload["NPFiltration"]
-                if isinstance(filt_val, dict):
-                    if "State" in self.data.get("Filtration", {}):
-                        self.data["Filtration"]["State"] = filt_val.get("State", self.data["Filtration"]["State"])
-                    if "Speed" in filt_val and "Filtration" in self.data:
-                        self.data["Filtration"]["Speed"] = filt_val["Speed"]
-                elif isinstance(filt_val, str):
-                    if "Filtration" not in self.data:
-                        self.data["Filtration"] = {}
-                    self.data["Filtration"]["State"] = 1 if filt_val == "ON" else 0
-                updated = True
-
-            if "NPFiltrationmode" in payload:
-                mode_str = payload["NPFiltrationmode"]
-                from .const import FILTRATION_MODES
-                for k, v in FILTRATION_MODES.items():
-                    if v == mode_str:
-                        if "Filtration" not in self.data:
-                            self.data["Filtration"] = {}
-                        self.data["Filtration"]["Mode"] = k
-                        break
-                updated = True
-
-            if "NPFiltrationspeed" in payload:
-                speed_str = payload["NPFiltrationspeed"]
-                from .const import FILTRATION_SPEEDS
-                for k, v in FILTRATION_SPEEDS.items():
-                    if v == speed_str:
-                        if "Filtration" not in self.data:
-                            self.data["Filtration"] = {}
-                        self.data["Filtration"]["Speed"] = k
-                        break
-                updated = True
-
-            if "NPLight" in payload:
-                light_val = payload["NPLight"]
-                if isinstance(light_val, str):
-                    self.data["Light"] = 1 if light_val == "ON" else 0
-                else:
-                    self.data["Light"] = light_val
-                updated = True
-
-            if "NPBoost" in payload:
-                boost_val = payload["NPBoost"]
-                from .const import BOOST_MODES
-                if isinstance(boost_val, str):
-                    for k, v in BOOST_MODES.items():
-                        if v == boost_val:
-                            if "Hydrolysis" not in self.data:
-                                self.data["Hydrolysis"] = {}
-                            self.data["Hydrolysis"]["Boost"] = k
-                            break
-                updated = True
-
-            if "NPpHMax" in payload:
-                if "pH" not in self.data:
-                    self.data["pH"] = {}
-                self.data["pH"]["Max"] = payload["NPpHMax"]
-                updated = True
-
-            if "NPpHMin" in payload:
-                if "pH" not in self.data:
-                    self.data["pH"] = {}
-                self.data["pH"]["Min"] = payload["NPpHMin"]
-                updated = True
-
-            if "NPRedox" in payload:
-                if "Redox" not in self.data:
-                    self.data["Redox"] = {}
-                self.data["Redox"]["Setpoint"] = payload["NPRedox"]
-                updated = True
-
-            if "NPHydrolysis" in payload:
-                if "Hydrolysis" not in self.data:
-                    self.data["Hydrolysis"] = {}
-                self.data["Hydrolysis"]["Setpoint"] = payload["NPHydrolysis"]
-                updated = True
-
-            if "NPIonization" in payload:
-                if "Ionization" not in self.data:
-                    self.data["Ionization"] = {}
-                self.data["Ionization"]["Setpoint"] = payload["NPIonization"]
-                updated = True
-
-            if "NPChlorine" in payload:
-                if "Chlorine" not in self.data:
-                    self.data["Chlorine"] = {}
-                self.data["Chlorine"]["Setpoint"] = payload["NPChlorine"]
-                updated = True
-
-            if updated:
-                self._available = True
-                async_dispatcher_send(self.hass, f"{SIGNAL_NEOPOOL_UPDATE}_{self.entry_id}")
-
         self._unsub_sensor = await mqtt.async_subscribe(
-            self.hass, sensor_topic, _sensor_message_received, 0
+            self.hass, sensor_topic, self._on_sensor_message, 0
         )
         self._unsub_result = await mqtt.async_subscribe(
-            self.hass, result_topic, _result_message_received, 0
+            self.hass, result_topic, self._on_result_message, 0
         )
 
         _LOGGER.info(
@@ -197,14 +110,116 @@ class NeoPoolCoordinator:
         )
 
     async def async_unload(self) -> None:
-        """Unload MQTT subscriptions."""
         if self._unsub_sensor:
             self._unsub_sensor()
         if self._unsub_result:
             self._unsub_result()
 
     async def async_send_command(self, command: str, payload: str = "") -> None:
-        """Send a command via MQTT."""
         topic = TOPIC_CMND.format(self.mqtt_topic, command)
-        _LOGGER.debug("Sending MQTT command: %s = %s", topic, payload)
+        _LOGGER.debug("NeoPool MQTT publish: %s = %s", topic, payload)
         await mqtt.async_publish(self.hass, topic, str(payload), 0, False)
+
+    @callback
+    def _on_sensor_message(self, msg) -> None:
+        try:
+            payload = json.loads(msg.payload)
+        except (json.JSONDecodeError, TypeError):
+            _LOGGER.warning("Invalid JSON in SENSOR message: %s", msg.payload)
+            return
+
+        neopool = payload.get("NeoPool")
+        if neopool is None:
+            return
+
+        self.data = neopool
+        self._available = True
+        async_dispatcher_send(self.hass, self.signal)
+
+    @callback
+    def _on_result_message(self, msg) -> None:
+        """Apply optimistic updates from command responses."""
+        try:
+            payload = json.loads(msg.payload)
+        except (json.JSONDecodeError, TypeError):
+            return
+
+        updated = False
+        for key, value in payload.items():
+            if self._apply_result(key, value):
+                updated = True
+
+        if updated:
+            self._available = True
+            async_dispatcher_send(self.hass, self.signal)
+
+    def _apply_result(self, key: str, value: Any) -> bool:
+        """Update local state for a single command result. Returns True if changed."""
+        if key == "NPFiltration":
+            state = _on_off_to_int(value)
+            if state is not None:
+                self.data.setdefault("Filtration", {})["State"] = state
+                return True
+            return False
+
+        if key == "NPFiltrationmode":
+            mode = _label_to_int(value, FILTRATION_MODES_REVERSE)
+            if mode is not None:
+                self.data.setdefault("Filtration", {})["Mode"] = mode
+                return True
+            return False
+
+        if key == "NPFiltrationspeed":
+            speed = _label_to_int(value, FILTRATION_SPEEDS_REVERSE)
+            if speed is not None:
+                self.data.setdefault("Filtration", {})["Speed"] = speed
+                return True
+            return False
+
+        if key == "NPLight":
+            light = _on_off_to_int(value)
+            if light is not None:
+                self.data["Light"] = light
+                return True
+            return False
+
+        if key == "NPBoost":
+            boost = _label_to_int(value, BOOST_MODES_REVERSE)
+            if boost is not None:
+                self.data.setdefault("Hydrolysis", {})["Boost"] = boost
+                return True
+            return False
+
+        if key == "NPpHMin":
+            self.data.setdefault("pH", {})["Min"] = value
+            return True
+        if key == "NPpHMax":
+            self.data.setdefault("pH", {})["Max"] = value
+            return True
+        if key == "NPRedox":
+            self.data.setdefault("Redox", {})["Setpoint"] = value
+            return True
+        if key == "NPHydrolysis":
+            self.data.setdefault("Hydrolysis", {})["Setpoint"] = value
+            return True
+        if key == "NPIonization":
+            self.data.setdefault("Ionization", {})["Setpoint"] = value
+            return True
+        if key == "NPChlorine":
+            self.data.setdefault("Chlorine", {})["Setpoint"] = value
+            return True
+
+        if key.startswith("NPAux") and len(key) == 6 and key[5].isdigit():
+            idx = int(key[5])
+            if 1 <= idx <= 4:
+                state = _on_off_to_int(value)
+                if state is not None:
+                    relay = self.data.setdefault("Relay", {})
+                    aux = relay.setdefault("Aux", [0, 0, 0, 0])
+                    while len(aux) < idx:
+                        aux.append(0)
+                    aux[idx - 1] = state
+                    return True
+            return False
+
+        return False
