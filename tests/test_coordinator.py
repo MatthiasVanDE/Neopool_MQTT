@@ -94,6 +94,31 @@ def test_apply_aux(coord):
     assert coord.data["Relay"]["Aux"][1] == 1
 
 
+# --- NPLight modes (Fase 1.3) --------------------------------------------------
+
+
+def test_apply_light_onoff(coord):
+    assert coord._apply_result("NPLight", "ON") is True
+    assert coord.data["Light"] == 1
+    assert coord._apply_result("NPLight", "OFF") is True
+    assert coord.data["Light"] == 0
+
+
+def test_apply_light_auto(coord):
+    assert coord._apply_result("NPLight", 3) is True
+    assert coord.data["Light"] == 3
+    assert coord._apply_result("NPLight", "Auto") is True
+    assert coord.data["Light"] == 3
+
+
+def test_apply_light_toggle(coord):
+    coord.data["Light"] = 0
+    assert coord._apply_result("NPLight", 2) is True
+    assert coord.data["Light"] == 1
+    assert coord._apply_result("NPLight", 2) is True
+    assert coord.data["Light"] == 0
+
+
 # --- NodeID not exposed (Fase 1.2) ---------------------------------------------
 
 

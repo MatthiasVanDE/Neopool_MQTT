@@ -59,6 +59,18 @@ BOOST_MODES = {
 }
 BOOST_MODES_REVERSE = {v: k for k, v in BOOST_MODES.items()}
 
+# NPLight: 0 off, 1 on, 2 toggle, 3 auto, 4 next RGB program.
+# The select exposes the stable selectable modes; toggle (2) and next-program (4)
+# are actions, not states, handled by the switch / a button.
+LIGHT_MODES = {
+    0: "Off",
+    1: "On",
+    3: "Auto",
+}
+LIGHT_MODES_REVERSE = {v: k for k, v in LIGHT_MODES.items()}
+LIGHT_TOGGLE = 2
+LIGHT_NEXT_PROGRAM = 4
+
 PH_STATES = {
     0: "No alarm",
     1: "pH too high",

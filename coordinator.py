@@ -14,6 +14,8 @@ from .const import (
     DOMAIN,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS_REVERSE,
+    LIGHT_MODES_REVERSE,
+    LIGHT_TOGGLE,
     LWT_OFFLINE,
     LWT_ONLINE,
     MANUFACTURER,
@@ -217,7 +219,13 @@ class NeoPoolCoordinator:
             return False
 
         if key == "NPLight":
-            light = _on_off_to_int(value)
+            # Accept ON/OFF, numeric modes (0/1/3), labels (Off/On/Auto), toggle (2).
+            light = _label_to_int(value, LIGHT_MODES_REVERSE)
+            if light is None:
+                light = _on_off_to_int(value)
+            if light == LIGHT_TOGGLE:
+                current = self.data.get("Light")
+                light = 0 if current == 1 else 1
             if light is not None:
                 self.data["Light"] = light
                 return True
