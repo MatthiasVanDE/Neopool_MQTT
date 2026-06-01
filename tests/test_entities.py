@@ -49,3 +49,22 @@ def test_light_mode_current_option(coord):
     assert sel.current_option == "Auto"
     coord.data["Light"] = 1
     assert sel.current_option == "On"
+
+
+# --- Filtration speed (Fase 1.4) ----------------------------------------------
+
+
+async def test_filtration_speed_combined_when_running(coord):
+    """When filtration runs, speed change uses the exact 'NPFiltration 1 2' form."""
+    coord.data["Filtration"]["State"] = 1
+    sel = select_mod.NeoPoolFiltrationSpeedSelect(coord)
+    await sel.async_select_option("Mid")  # Mid == 2
+    assert coord.sent == [("NPFiltration", "1 2")]
+
+
+async def test_filtration_speed_when_off(coord):
+    """When filtration is off, only the speed is set (no mode switch)."""
+    coord.data["Filtration"]["State"] = 0
+    sel = select_mod.NeoPoolFiltrationSpeedSelect(coord)
+    await sel.async_select_option("High")  # High == 3
+    assert coord.sent == [("NPFiltrationspeed", "3")]

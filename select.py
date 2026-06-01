@@ -1,8 +1,6 @@
 """Select platform for NeoPool MQTT Controller."""
 from __future__ import annotations
 
-import logging
-
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -12,11 +10,11 @@ from .const import (
     BOOST_MODES,
     BOOST_MODES_REVERSE,
     CMD_NPBOOST,
+    CMD_NPFILTRATION,
     CMD_NPFILTRATIONMODE,
     CMD_NPFILTRATIONSPEED,
     CMD_NPLIGHT,
     DOMAIN,
-    FILTRATION_MODE_MANUAL,
     FILTRATION_MODES,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS,
@@ -26,8 +24,6 @@ from .const import (
 )
 from .coordinator import NeoPoolCoordinator
 from .entity import NeoPoolEntity
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -66,9 +62,12 @@ class NeoPoolFiltrationModeSelect(NeoPoolEntity, SelectEntity):
 class NeoPoolFiltrationSpeedSelect(NeoPoolEntity, SelectEntity):
     """Filtration speed select.
 
-    NPFiltrationspeed only applies when filtration mode = Manual on the device.
-    To make picking a speed actually do something, switch the device into Manual
-    mode first when needed.
+    Behaviour (explicit, documented):
+    - When filtration is running, the speed is changed in a single command using the
+      documented two-parameter form ``NPFiltration 1 <speed>`` (e.g. "NPFiltration 1 2").
+      This sets state+speed atomically and does NOT silently force the filtration mode.
+    - When filtration is off, only the desired speed is set (``NPFiltrationspeed``);
+      it takes effect once filtration runs.
     """
 
     _attr_icon = "mdi:speedometer"
@@ -85,17 +84,15 @@ class NeoPoolFiltrationSpeedSelect(NeoPoolEntity, SelectEntity):
         speed = FILTRATION_SPEEDS_REVERSE.get(option)
         if speed is None:
             return
-        current_mode = self._get("Filtration", "Mode")
-        if current_mode != FILTRATION_MODE_MANUAL:
-            _LOGGER.info(
-                "Switching filtration to Manual mode so speed change takes effect "
-                "(was mode=%s)",
-                current_mode,
-            )
+        if self._get("Filtration", "State") == 1:
+            # Combined state+speed form: payload must be exactly "1 2" (space-separated).
             await self.coordinator.async_send_command(
-                CMD_NPFILTRATIONMODE, str(FILTRATION_MODE_MANUAL)
+                CMD_NPFILTRATION, f"1 {speed}"
             )
-        await self.coordinator.async_send_command(CMD_NPFILTRATIONSPEED, str(speed))
+        else:
+            await self.coordinator.async_send_command(
+                CMD_NPFILTRATIONSPEED, str(speed)
+            )
 
 
 class NeoPoolBoostModeSelect(NeoPoolEntity, SelectEntity):

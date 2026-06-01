@@ -94,6 +94,13 @@ def test_apply_aux(coord):
     assert coord.data["Relay"]["Aux"][1] == 1
 
 
+def test_apply_filtration_combined(coord):
+    """The combined 'state speed' result updates both fields."""
+    assert coord._apply_result("NPFiltration", "1 2") is True
+    assert coord.data["Filtration"]["State"] == 1
+    assert coord.data["Filtration"]["Speed"] == 2
+
+
 # --- NPLight modes (Fase 1.3) --------------------------------------------------
 
 

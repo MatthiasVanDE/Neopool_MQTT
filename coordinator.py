@@ -198,11 +198,27 @@ class NeoPoolCoordinator:
     def _apply_result(self, key: str, value: Any) -> bool:
         """Update local state for a single command result. Returns True if changed."""
         if key == "NPFiltration":
-            state = _on_off_to_int(value)
+            # Accept both the scalar form ("1") and the combined state+speed form
+            # ("1 2", space-separated) sent by the speed select when running.
+            state_tok: Any = value
+            speed_tok: Any = None
+            if isinstance(value, str) and len(value.split()) > 1:
+                parts = value.split()
+                state_tok, speed_tok = parts[0], parts[1]
+            changed = False
+            state = _on_off_to_int(state_tok)
             if state is not None:
                 self.data.setdefault("Filtration", {})["State"] = state
-                return True
-            return False
+                changed = True
+            if speed_tok is not None:
+                try:
+                    speed: int | None = int(speed_tok)
+                except (TypeError, ValueError):
+                    speed = _label_to_int(speed_tok, FILTRATION_SPEEDS_REVERSE)
+                if speed is not None:
+                    self.data.setdefault("Filtration", {})["Speed"] = speed
+                    changed = True
+            return changed
 
         if key == "NPFiltrationmode":
             mode = _label_to_int(value, FILTRATION_MODES_REVERSE)
