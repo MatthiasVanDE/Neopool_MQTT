@@ -38,6 +38,14 @@ CMD_NPESCAPE = "NPEscape"
 CMD_NPEXEC = "NPExec"
 CMD_NPSAVE = "NPSave"
 CMD_NPAUX = "NPAux"
+CMD_NPWRITE = "NPWrite"
+CMD_NPVERSION = "NPVersion"
+
+# Modbus register for the heating setpoint (MBF_PAR_HEATING_TEMP), per Tasmota NeoPool
+# docs. Used only by the experimental heating_setpoint number (Fase 2.4). Writing it
+# uses NPWrite + NPExec (RAM only). Verify the register/scaling for your model before
+# enabling this entity. Whole degrees Celsius are assumed.
+REG_HEATING_TEMP = "0x0416"
 
 def berry_enabled(entry) -> bool:
     """Resolve whether Berry (neopoolcmd.be) commands are enabled for an entry.

@@ -51,3 +51,36 @@ def test_relay_values_map_on_off():
     # Fixture: Relay.Redox == 1 -> "On", Relay.Heating == 0 -> "Off"
     assert by_key["relay_redox"].value_fn(full) == "On"
     assert by_key["relay_heating"].value_fn(full) == "Off"
+
+
+# --- Module diagnostics (Fase 2.2) ---------------------------------------------
+
+
+def test_module_binary_sensors():
+    full = load_fixture("sensor_full")["NeoPool"]
+    minimal = load_fixture("sensor_minimal")["NeoPool"]
+    by_key = {d.key: d for d in binary_sensor_mod.BINARY_SENSORS}
+    # full fixture: all modules present (==1)
+    assert by_key["module_ph"].is_on_fn(full) is True
+    assert by_key["module_hydrolysis"].is_on_fn(full) is True
+    # minimal fixture: only pH present (==1), others reported as 0
+    assert by_key["module_ph"].is_on_fn(minimal) is True
+    assert by_key["module_redox"].is_on_fn(minimal) is False
+
+
+def test_module_absent_modules_dict_returns_none():
+    assert binary_sensor_mod._module_present("pH")({}) is None
+
+
+# --- Modbus error rate (Fase 2.3) ----------------------------------------------
+
+
+def test_mb_error_rate():
+    full = load_fixture("sensor_full")["NeoPool"]
+    # 100000 requests, 99950 ok -> 50 errors -> 0.05%
+    assert sensor_mod._mb_error_rate(full) == 0.05
+
+
+def test_mb_error_rate_missing_connection():
+    assert sensor_mod._mb_error_rate({}) is None
+    assert sensor_mod._mb_error_rate({"Connection": {"MBRequests": 0}}) is None

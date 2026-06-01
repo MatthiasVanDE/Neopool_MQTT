@@ -68,3 +68,23 @@ async def test_filtration_speed_when_off(coord):
     sel = select_mod.NeoPoolFiltrationSpeedSelect(coord)
     await sel.async_select_option("High")  # High == 3
     assert coord.sent == [("NPFiltrationspeed", "3")]
+
+
+# --- Heating setpoint (Fase 2.4) ----------------------------------------------
+
+
+async def test_heating_setpoint_writes_register_then_exec(coord):
+    num = number_mod.NeoPoolHeatingSetpointNumber(coord)
+    num.async_write_ha_state = lambda: None  # not attached to hass in unit test
+    await num.async_set_native_value(28.4)
+    assert coord.sent == [("NPWrite", "0x0416 28"), ("NPExec", "")]
+    assert num.native_value == 28
+
+
+def test_heating_setpoint_available_only_with_heating_relay(coord):
+    num = number_mod.NeoPoolHeatingSetpointNumber(coord)
+    # full fixture has Relay.Heating present -> base availability ok; coordinator
+    # availability also needs data seen (it is, fixture loaded).
+    assert num.available is True
+    coord.data["Relay"].pop("Heating")
+    assert num.available is False

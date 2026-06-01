@@ -11,6 +11,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
     BOOST_MODES_REVERSE,
+    CMD_NPVERSION,
     DOMAIN,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS_REVERSE,
@@ -66,11 +67,15 @@ class NeoPoolCoordinator:
         mqtt_topic: str,
         device_name: str,
         entry_id: str,
+        berry_enabled: bool = False,
     ) -> None:
         self.hass = hass
         self.mqtt_topic = mqtt_topic
         self.device_name = device_name
         self.entry_id = entry_id
+        self.berry_enabled = berry_enabled
+        # Berry driver version (from NPVersion RESULT); not present in SENSOR JSON.
+        self.berry_version: str | None = None
         self.data: dict[str, Any] = {}
         self._unsub_sensor = None
         self._unsub_result = None
@@ -127,6 +132,11 @@ class NeoPoolCoordinator:
             result_topic,
             lwt_topic,
         )
+
+        # Berry-only: request the driver version once so the diagnostic sensor can
+        # populate. Harmless no-op on devices without neopoolcmd.be (no RESULT).
+        if self.berry_enabled:
+            await self.async_send_command(CMD_NPVERSION)
 
     async def async_unload(self) -> None:
         if self._unsub_sensor:
@@ -197,6 +207,10 @@ class NeoPoolCoordinator:
 
     def _apply_result(self, key: str, value: Any) -> bool:
         """Update local state for a single command result. Returns True if changed."""
+        if key == "NPVersion":
+            self.berry_version = str(value)
+            return True
+
         if key == "NPFiltration":
             # Accept both the scalar form ("1") and the combined state+speed form
             # ("1 2", space-separated) sent by the speed select when running.

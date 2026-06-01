@@ -11,6 +11,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -43,6 +44,27 @@ def _eq(path: tuple[str, ...], target: int) -> Callable[[dict[str, Any]], bool |
         return node == target
 
     return get
+
+
+def _module_present(name: str) -> Callable[[dict[str, Any]], bool | None]:
+    def get(data: dict[str, Any]) -> bool | None:
+        modules = data.get("Modules")
+        if not isinstance(modules, dict) or name not in modules:
+            return None
+        return modules.get(name) == 1
+
+    return get
+
+
+# Diagnostic, default-disabled sensors exposing the Modules flags. (Name, key suffix).
+_MODULES = (
+    ("pH", "ph"),
+    ("Redox", "redox"),
+    ("Hydrolysis", "hydrolysis"),
+    ("Chlorine", "chlorine"),
+    ("Conductivity", "conductivity"),
+    ("Ionization", "ionization"),
+)
 
 
 BINARY_SENSORS: tuple[NeoPoolBinarySensorDescription, ...] = (
@@ -92,6 +114,17 @@ BINARY_SENSORS: tuple[NeoPoolBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.RUNNING,
         icon="mdi:pump",
         is_on_fn=_eq(("Filtration", "State"), 1),
+    ),
+    *(
+        NeoPoolBinarySensorDescription(
+            key=f"module_{suffix}",
+            name=f"Module {mod_name}",
+            icon="mdi:puzzle",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            entity_registry_enabled_default=False,
+            is_on_fn=_module_present(mod_name),
+        )
+        for mod_name, suffix in _MODULES
     ),
 )
 

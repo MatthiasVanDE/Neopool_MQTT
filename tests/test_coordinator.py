@@ -129,6 +129,12 @@ def test_apply_light_toggle(coord):
 # --- NodeID not exposed (Fase 1.2) ---------------------------------------------
 
 
+def test_npversion_caches_berry_version(coord):
+    assert coord.berry_version is None
+    assert coord._apply_result("NPVersion", "0.9.5.1") is True
+    assert coord.berry_version == "0.9.5.1"
+
+
 def test_nodeid_not_in_device_info(coord):
     import json
 
