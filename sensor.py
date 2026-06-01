@@ -65,6 +65,15 @@ def _relay_state(idx: int) -> Callable[[dict[str, Any]], str | None]:
     return get
 
 
+def _relay_present(name: str) -> Callable[[dict[str, Any]], bool]:
+    """available_fn: the named relay subkey exists (function assigned to a relay)."""
+
+    def get(data: dict[str, Any]) -> bool:
+        return (data.get("Relay") or {}).get(name) is not None
+
+    return get
+
+
 def _on_off(*path: str) -> Callable[[dict[str, Any]], str | None]:
     def get(data: dict[str, Any]) -> str | None:
         node: Any = data
@@ -286,6 +295,48 @@ SENSORS: tuple[NeoPoolSensorDescription, ...] = (
         name="Valve Relay",
         icon="mdi:valve",
         value_fn=_on_off("Relay", "Valve"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_base",
+        name="Base Pump Relay",
+        icon="mdi:flask-outline",
+        value_fn=_on_off("Relay", "Base"),
+        available_fn=_relay_present("Base"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_redox",
+        name="Redox Relay",
+        icon="mdi:flash",
+        value_fn=_on_off("Relay", "Redox"),
+        available_fn=_relay_present("Redox"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_chlorine",
+        name="Chlorine Relay",
+        icon="mdi:flask-round-bottom",
+        value_fn=_on_off("Relay", "Chlorine"),
+        available_fn=_relay_present("Chlorine"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_conductivity",
+        name="Conductivity Relay",
+        icon="mdi:flash-triangle",
+        value_fn=_on_off("Relay", "Conductivity"),
+        available_fn=_relay_present("Conductivity"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_heating",
+        name="Heating Relay",
+        icon="mdi:radiator",
+        value_fn=_on_off("Relay", "Heating"),
+        available_fn=_relay_present("Heating"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_uv",
+        name="UV Relay",
+        icon="mdi:weather-sunny",
+        value_fn=_on_off("Relay", "UV"),
+        available_fn=_relay_present("UV"),
     ),
     NeoPoolSensorDescription(
         key="device_type",
