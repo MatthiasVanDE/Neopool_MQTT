@@ -11,17 +11,21 @@ from homeassistant.components.number import (
     NumberMode,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CMD_NPCHLORINE,
+    CMD_NPEXEC,
     CMD_NPHYDROLYSIS,
     CMD_NPIONIZATION,
     CMD_NPPHMAX,
     CMD_NPPHMIN,
     CMD_NPREDOX,
+    CMD_NPWRITE,
     DOMAIN,
+    REG_HEATING_TEMP,
 )
 from .coordinator import NeoPoolCoordinator
 from .entity import NeoPoolEntity
@@ -143,7 +147,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: NeoPoolCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-    async_add_entities(NeoPoolNumber(coordinator, desc) for desc in NUMBERS)
+    entities: list[NumberEntity] = [
+        NeoPoolNumber(coordinator, desc) for desc in NUMBERS
+    ]
+    entities.append(NeoPoolHeatingSetpointNumber(coordinator))
+    async_add_entities(entities)
 
 
 class NeoPoolNumber(NeoPoolEntity, NumberEntity):
@@ -190,3 +198,47 @@ class NeoPoolNumber(NeoPoolEntity, NumberEntity):
         await self.coordinator.async_send_command(
             self.entity_description.command, payload
         )
+
+
+class NeoPoolHeatingSetpointNumber(NeoPoolEntity, NumberEntity):
+    """Experimental heating setpoint (Fase 2.4).
+
+    WARNING: this writes a low-level Modbus register (MBF_PAR_HEATING_TEMP, 0x0416)
+    via NPWrite + NPExec. It is default-disabled and only available when a Heating
+    relay function is reported. Verify the register address and value scaling for
+    your specific model before enabling. Changes are applied to RAM (NPExec); they
+    are NOT persisted (no NPSave) to protect the EEPROM. The heating setpoint is not
+    present in the SENSOR JSON, so the value shown reflects the last value set here.
+    """
+
+    _attr_mode = NumberMode.BOX
+    _attr_native_min_value = 0
+    _attr_native_max_value = 40
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_icon = "mdi:thermometer"
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: NeoPoolCoordinator) -> None:
+        super().__init__(coordinator, "heating_setpoint", "Heating Setpoint")
+        self._optimistic_value: float | None = None
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        return (self.coordinator.data.get("Relay") or {}).get("Heating") is not None
+
+    @property
+    def native_value(self) -> float | None:
+        return self._optimistic_value
+
+    async def async_set_native_value(self, value: float) -> None:
+        degrees = int(round(value))
+        # NPWrite <register> <value> writes to RAM; NPExec activates without NPSave.
+        await self.coordinator.async_send_command(
+            CMD_NPWRITE, f"{REG_HEATING_TEMP} {degrees}"
+        )
+        await self.coordinator.async_send_command(CMD_NPEXEC)
+        self._optimistic_value = degrees
+        self.async_write_ha_state()

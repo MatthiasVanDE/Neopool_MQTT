@@ -11,12 +11,18 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
     BOOST_MODES_REVERSE,
+    CMD_NPVERSION,
     DOMAIN,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS_REVERSE,
+    LIGHT_MODES_REVERSE,
+    LIGHT_TOGGLE,
+    LWT_OFFLINE,
+    LWT_ONLINE,
     MANUFACTURER,
     TOPIC_CMND,
     TOPIC_STAT_RESULT,
+    TOPIC_TELE_LWT,
     TOPIC_TELE_SENSOR,
 )
 
@@ -61,18 +67,29 @@ class NeoPoolCoordinator:
         mqtt_topic: str,
         device_name: str,
         entry_id: str,
+        berry_enabled: bool = False,
     ) -> None:
         self.hass = hass
         self.mqtt_topic = mqtt_topic
         self.device_name = device_name
         self.entry_id = entry_id
+        self.berry_enabled = berry_enabled
+        # Berry driver version (from NPVersion RESULT); not present in SENSOR JSON.
+        self.berry_version: str | None = None
         self.data: dict[str, Any] = {}
         self._unsub_sensor = None
         self._unsub_result = None
+        self._unsub_lwt = None
+        # Data-driven availability: True once we've seen a SENSOR/RESULT message.
         self._available = False
+        # LWT availability: None = unknown, True = Online, False = Offline.
+        # An explicit Offline LWT overrides the data-driven flag.
+        self._lwt_online: bool | None = None
 
     @property
     def available(self) -> bool:
+        if self._lwt_online is False:
+            return False
         return self._available
 
     @property
@@ -90,13 +107,14 @@ class NeoPoolCoordinator:
         powerunit = self.data.get("Powerunit") or {}
         if powerunit.get("Version"):
             info["sw_version"] = powerunit["Version"]
-        if powerunit.get("NodeID"):
-            info["serial_number"] = powerunit["NodeID"]
+        # NodeID is intentionally NOT exposed (sensitive identifier). The stable
+        # device identifier is the mqtt_topic, already set in "identifiers".
         return info
 
     async def async_setup(self) -> None:
         sensor_topic = TOPIC_TELE_SENSOR.format(self.mqtt_topic)
         result_topic = TOPIC_STAT_RESULT.format(self.mqtt_topic)
+        lwt_topic = TOPIC_TELE_LWT.format(self.mqtt_topic)
 
         self._unsub_sensor = await mqtt.async_subscribe(
             self.hass, sensor_topic, self._on_sensor_message, 0
@@ -104,16 +122,29 @@ class NeoPoolCoordinator:
         self._unsub_result = await mqtt.async_subscribe(
             self.hass, result_topic, self._on_result_message, 0
         )
+        self._unsub_lwt = await mqtt.async_subscribe(
+            self.hass, lwt_topic, self._on_lwt_message, 0
+        )
 
         _LOGGER.info(
-            "NeoPool MQTT subscribed to %s and %s", sensor_topic, result_topic
+            "NeoPool MQTT subscribed to %s, %s and %s",
+            sensor_topic,
+            result_topic,
+            lwt_topic,
         )
+
+        # Berry-only: request the driver version once so the diagnostic sensor can
+        # populate. Harmless no-op on devices without neopoolcmd.be (no RESULT).
+        if self.berry_enabled:
+            await self.async_send_command(CMD_NPVERSION)
 
     async def async_unload(self) -> None:
         if self._unsub_sensor:
             self._unsub_sensor()
         if self._unsub_result:
             self._unsub_result()
+        if self._unsub_lwt:
+            self._unsub_lwt()
 
     async def async_send_command(self, command: str, payload: str = "") -> None:
         topic = TOPIC_CMND.format(self.mqtt_topic, command)
@@ -137,6 +168,27 @@ class NeoPoolCoordinator:
         async_dispatcher_send(self.hass, self.signal)
 
     @callback
+    def _on_lwt_message(self, msg) -> None:
+        """Track availability from the Tasmota Last Will (LWT) topic."""
+        payload = msg.payload
+        if isinstance(payload, bytes):
+            payload = payload.decode(errors="ignore")
+        payload = (payload or "").strip()
+
+        if payload == LWT_ONLINE:
+            online = True
+        elif payload == LWT_OFFLINE:
+            online = False
+        else:
+            _LOGGER.debug("Unrecognised LWT payload: %s", payload)
+            return
+
+        if online == self._lwt_online:
+            return
+        self._lwt_online = online
+        async_dispatcher_send(self.hass, self.signal)
+
+    @callback
     def _on_result_message(self, msg) -> None:
         """Apply optimistic updates from command responses."""
         try:
@@ -155,12 +207,32 @@ class NeoPoolCoordinator:
 
     def _apply_result(self, key: str, value: Any) -> bool:
         """Update local state for a single command result. Returns True if changed."""
+        if key == "NPVersion":
+            self.berry_version = str(value)
+            return True
+
         if key == "NPFiltration":
-            state = _on_off_to_int(value)
+            # Accept both the scalar form ("1") and the combined state+speed form
+            # ("1 2", space-separated) sent by the speed select when running.
+            state_tok: Any = value
+            speed_tok: Any = None
+            if isinstance(value, str) and len(value.split()) > 1:
+                parts = value.split()
+                state_tok, speed_tok = parts[0], parts[1]
+            changed = False
+            state = _on_off_to_int(state_tok)
             if state is not None:
                 self.data.setdefault("Filtration", {})["State"] = state
-                return True
-            return False
+                changed = True
+            if speed_tok is not None:
+                try:
+                    speed: int | None = int(speed_tok)
+                except (TypeError, ValueError):
+                    speed = _label_to_int(speed_tok, FILTRATION_SPEEDS_REVERSE)
+                if speed is not None:
+                    self.data.setdefault("Filtration", {})["Speed"] = speed
+                    changed = True
+            return changed
 
         if key == "NPFiltrationmode":
             mode = _label_to_int(value, FILTRATION_MODES_REVERSE)
@@ -177,7 +249,13 @@ class NeoPoolCoordinator:
             return False
 
         if key == "NPLight":
-            light = _on_off_to_int(value)
+            # Accept ON/OFF, numeric modes (0/1/3), labels (Off/On/Auto), toggle (2).
+            light = _label_to_int(value, LIGHT_MODES_REVERSE)
+            if light is None:
+                light = _on_off_to_int(value)
+            if light == LIGHT_TOGGLE:
+                current = self.data.get("Light")
+                light = 0 if current == 1 else 1
             if light is not None:
                 self.data["Light"] = light
                 return True

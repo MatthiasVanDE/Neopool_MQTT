@@ -43,36 +43,80 @@ disabled by default — enable them via the entity registry if you need them.
 
 | Platform | Count | Highlights |
 |---|---|---|
-| Sensor | 41 | Water Temperature, pH, Redox (ORP), Hydrolysis Level, Cell Runtime, Polarization Changes, Relay 1–7, Acid/Valve relays, Powerunit voltages, Modbus stats, Chlorine, Conductivity, Ionization |
-| Binary sensor | 7 | pH Alarm, pH Tank Empty, pH Flow, Hydrolysis Flow/Low Alarm, Cover Active, Filtration Running |
-| Switch | 6 | Filtration, Light, Aux 1–4 |
-| Select | 3 | Filtration Mode, Filtration Speed, Boost Mode |
-| Number | 6 | pH Min/Max, Redox / Hydrolysis / Ionization / Chlorine setpoints |
-| Button | 3 | Clear Errors, Save to EEPROM, Execute Changes |
+| Sensor | 49 | Water Temperature, pH, Redox (ORP), Hydrolysis Level, Cell Runtime, Polarization Changes, Relay 1–7, named relays (Acid/Valve/Base/Redox/Chlorine/Conductivity/Heating/UV), Powerunit voltages, Modbus stats + error rate, Chlorine, Conductivity, Ionization, Berry version |
+| Binary sensor | 13 | pH Alarm, pH Tank Empty, pH Flow, Hydrolysis Flow/Low Alarm, Cover Active, Filtration Running, Module present (pH/Redox/Hydrolysis/Chlorine/Conductivity/Ionization) |
+| Switch | 6 | Filtration, Light, Aux 1–4 *(Aux only when the Berry option is enabled)* |
+| Select | 4 | Filtration Mode, Filtration Speed, Boost Mode, Light Mode |
+| Number | 7 | pH Min/Max, Redox / Hydrolysis / Ionization / Chlorine setpoints, Heating setpoint *(experimental)* |
+| Button | 4 | Clear Errors, Save to EEPROM, Execute Changes, Light Next Program |
 
-Chlorine, Conductivity and Ionization entities mark themselves *Unavailable*
-when the controller doesn't report the corresponding module — they exist for
-everyone, but only "light up" if hardware is present.
+Module-dependent entities (Chlorine, Conductivity, Ionization, the named relays,
+the heating setpoint, …) mark themselves *Unavailable* when the controller
+doesn't report the corresponding subkey — they exist for everyone, but only
+"light up" if the hardware/function is present. The integration does **not**
+remove entities based on detected modules (that would break automations bound to
+them); it keeps them and uses availability instead.
 
 ## Behaviour worth knowing
 
-### Filtration speed only applies in Manual mode
+### Availability follows the Tasmota LWT
 
-The NeoPool controller honours `NPFiltrationspeed` **only when the filtration
-mode is Manual (0)**. In Auto / Smart / Intelligent / Heating the speed is
-fixed by the timer-block configuration on the device.
+The integration subscribes to `tele/<topic>/LWT`. When Tasmota's Last Will
+publishes `Offline`, **all entities become Unavailable** — and that explicitly
+wins over the data-driven availability (a stale `Online` won't keep them alive).
+`Online` restores availability. This makes a disconnected bridge visible in HA
+instead of showing the last cached values forever.
 
-To make the **Filtration Speed** select actually do something, the integration
-switches the device to Manual mode *automatically* before sending the speed,
-when needed. You'll see it in the log:
+### Filtration Speed
 
-```
-INFO ... Switching filtration to Manual mode so speed change takes effect (was mode=1)
-```
+`NPFiltrationspeed` only meaningfully applies with configured speed control /
+Manual mode on the device. The **Filtration Speed** select therefore behaves
+explicitly (it no longer silently forces Manual mode):
 
-If you want speed control while staying in Auto, you must configure the speeds
-per timer-block on the controller's front panel. The integration does not do
-raw Modbus writes.
+- **While filtration is running** it sends the documented two-parameter form
+  `NPFiltration 1 <speed>` (e.g. `NPFiltration 1 2`), setting state + speed in
+  one command.
+- **While filtration is off** it sends `NPFiltrationspeed <speed>`, setting the
+  desired speed for when it next runs.
+
+The integration does not do raw Modbus writes for filtration.
+
+### Light
+
+The original `Light` switch (on/off) is kept. Two extra controls were added:
+
+- **Light Mode** select — Off / On / Auto (`NPLight 0 / 1 / 3`).
+- **Light Next Program** button — advances to the next RGB program (`NPLight 4`).
+
+### Berry commands (Aux switches)
+
+`NPAux1..NPAux4` only exist when the Berry script `neopoolcmd.be` is loaded on
+the ESP32. Enable **"Berry NeoPool commands installed"** during setup (or later
+via the integration's Options) to create the Aux switches. Toggling the option
+reloads the integration. For backward compatibility, config entries created
+before this option existed default to *enabled*, so their existing Aux switches
+are preserved.
+
+### Heating setpoint (experimental)
+
+If the controller reports a `Heating` relay function, an **experimental**,
+default-disabled `Heating Setpoint` number appears. Setting it writes the
+Modbus register `0x0416` (`MBF_PAR_HEATING_TEMP`) via `NPWrite` + `NPExec`
+(RAM only — **never** `NPSave`). Verify the register address and value scaling
+for your model before relying on it.
+
+### EEPROM safety
+
+`NPSave` persists settings to EEPROM, which has a limited number of write cycles
+(guaranteed 100,000). The integration **never** calls `NPSave` automatically —
+the high-level `NP…` setpoints are managed by the driver, and the experimental
+heating write uses `NPExec` (RAM). Use the **Save to EEPROM** button only when
+you deliberately want to persist a change.
+
+### Privacy
+
+The device's `NodeID` is **not** exposed (not as a serial number, attribute, or
+in logs). The stable device identifier is the MQTT topic.
 
 ### The clock is **not** managed by this integration
 
@@ -105,18 +149,25 @@ without waiting for the next `tele/.../SENSOR` cycle.
 
 ```
 custom_components/neopool_mqtt/
-  __init__.py       # config-entry setup / unload, platform forwarding
-  const.py          # MQTT topics, NP-commands, mode/speed/boost dicts
-  config_flow.py    # UI: MQTT topic + device name
-  coordinator.py    # MQTT subscribe/publish, state cache, dispatcher
+  __init__.py       # config-entry setup / unload, platform forwarding, options reload
+  const.py          # MQTT topics, NP-commands, mode/speed/boost/light dicts, berry helper
+  config_flow.py    # UI: MQTT topic + device name + Berry option; OptionsFlow
+  coordinator.py    # MQTT subscribe/publish (SENSOR/RESULT/LWT), state cache, dispatcher
   entity.py         # base entity with dispatcher binding
-  sensor.py         # 41 sensors via NeoPoolSensorDescription
-  binary_sensor.py  # 7 binary sensors via NeoPoolBinarySensorDescription
-  switch.py         # filtration / light / aux1-4
-  select.py         # filtration mode / speed / boost
-  number.py         # 6 setpoints via NeoPoolNumberDescription
-  button.py         # clear-errors / save / exec
+  sensor.py         # 49 sensors (description-driven + Berry version)
+  binary_sensor.py  # 13 binary sensors (incl. module diagnostics)
+  switch.py         # filtration / light / aux1-4 (Aux conditional)
+  select.py         # filtration mode / speed / boost / light mode
+  number.py         # 6 setpoints + experimental heating setpoint
+  button.py         # clear-errors / save / exec / light-next-program
 ```
+
+Entity **display names are English** (set via `_attr_name`, which in Home
+Assistant takes precedence over `translation_key`). The config and options
+flows are translated (en/nl). Translating entity names to Dutch would require
+switching every entity from `_attr_name` to `translation_key`; that was
+deliberately not done to avoid touching working entities (see `CLAUDE.md`
+REGEL 0). You can always rename entities locally in the HA UI.
 
 ## Troubleshooting
 
@@ -130,22 +181,32 @@ custom_components/neopool_mqtt/
   logs filtered on `mqtt`.
 
 **Filtration Speed doesn't change anything**
-- See "Filtration speed only applies in Manual mode" above. Either let the
-  integration auto-switch to Manual or change mode yourself first.
+- See "Filtration Speed" above. Speed control requires a variable-speed pump
+  configured on the controller; on a single-speed pump the command is a no-op.
+
+**The Aux switches are missing**
+- They are only created when the **Berry** option is enabled (the `neopoolcmd.be`
+  script must be loaded on the ESP32). Enable it in the integration's Options.
 
 **The NeoPool clock keeps resetting / is one hour off**
 - The fix is in Tasmota, not here. See "The clock is not managed by this
   integration" above.
 
 **An entity is Unavailable**
-- Chlorine, Conductivity, and Ionization depend on optional hardware. If your
-  pool doesn't have that module, the entity stays Unavailable — that's normal.
+- Module-dependent entities (Chlorine, Conductivity, Ionization, named relays,
+  heating setpoint, …) depend on optional hardware/function assignment. If your
+  pool doesn't report it, the entity stays Unavailable — that's normal.
+- If **everything** is Unavailable, the Tasmota bridge is probably offline (LWT
+  `Offline`). Check the bridge / broker connection.
 
 ## Commands actually sent by this integration
 
-`NPFiltration`, `NPFiltrationmode`, `NPFiltrationspeed`, `NPLight`,
-`NPAux1`..`NPAux4`, `NPpHMin`, `NPpHMax`, `NPRedox`, `NPHydrolysis`,
-`NPIonization`, `NPChlorine`, `NPBoost`, `NPEscape`, `NPSave`, `NPExec`.
+`NPFiltration` (incl. the `1 <speed>` form), `NPFiltrationmode`,
+`NPFiltrationspeed`, `NPLight` (modes 0/1/3/4), `NPAux1`..`NPAux4` *(Berry only)*,
+`NPpHMin`, `NPpHMax`, `NPRedox`, `NPHydrolysis`, `NPIonization`, `NPChlorine`,
+`NPBoost`, `NPEscape`, `NPSave` (button only), `NPExec`, `NPVersion` *(Berry,
+once at setup)*, and `NPWrite 0x0416` *(only via the experimental heating
+setpoint)*.
 
-It deliberately does **not** send `NPTime`, `NPTelePeriod`, `NPRead`,
-`NPWrite`, or any direct Modbus register writes.
+It deliberately does **not** send `NPTime`, `NPTelePeriod`, `NPRead`, or any
+other direct Modbus register writes beyond the documented heating register.

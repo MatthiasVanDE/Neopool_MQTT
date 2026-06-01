@@ -8,7 +8,14 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CMD_NPESCAPE, CMD_NPEXEC, CMD_NPSAVE, DOMAIN
+from .const import (
+    CMD_NPESCAPE,
+    CMD_NPEXEC,
+    CMD_NPLIGHT,
+    CMD_NPSAVE,
+    DOMAIN,
+    LIGHT_NEXT_PROGRAM,
+)
 from .coordinator import NeoPoolCoordinator
 from .entity import NeoPoolEntity
 
@@ -41,6 +48,13 @@ BUTTONS: tuple[NeoPoolButtonDescription, ...] = (
         icon="mdi:play-circle",
         entity_registry_enabled_default=False,
         command=CMD_NPEXEC,
+    ),
+    NeoPoolButtonDescription(
+        key="light_next_program",
+        name="Light Next Program",
+        icon="mdi:skip-next",
+        command=CMD_NPLIGHT,
+        payload=str(LIGHT_NEXT_PROGRAM),
     ),
 )
 

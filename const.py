@@ -5,13 +5,23 @@ MANUFACTURER = "Sugar Valley"
 
 CONF_MQTT_TOPIC = "mqtt_topic"
 CONF_DEVICE_NAME = "device_name"
+# Whether the Berry script neopoolcmd.be is loaded on the ESP32. It provides the
+# NPAux/NPAntiFreeze/NPTimer/NPBackup commands. Aux switches are only created when
+# this is enabled.
+CONF_BERRY_ENABLED = "berry_enabled"
 
 DEFAULT_MQTT_TOPIC = "SmartPool"
 DEFAULT_DEVICE_NAME = "NeoPool"
+# Default for NEW config entries (config flow). Most devices have no Berry script.
+DEFAULT_BERRY_ENABLED = False
 
 TOPIC_TELE_SENSOR = "tele/{}/SENSOR"
+TOPIC_TELE_LWT = "tele/{}/LWT"
 TOPIC_STAT_RESULT = "stat/{}/RESULT"
 TOPIC_CMND = "cmnd/{}/{}"
+
+LWT_ONLINE = "Online"
+LWT_OFFLINE = "Offline"
 
 CMD_NPFILTRATION = "NPFiltration"
 CMD_NPFILTRATIONMODE = "NPFiltrationmode"
@@ -28,6 +38,27 @@ CMD_NPESCAPE = "NPEscape"
 CMD_NPEXEC = "NPExec"
 CMD_NPSAVE = "NPSave"
 CMD_NPAUX = "NPAux"
+CMD_NPWRITE = "NPWrite"
+CMD_NPVERSION = "NPVersion"
+
+# Modbus register for the heating setpoint (MBF_PAR_HEATING_TEMP), per Tasmota NeoPool
+# docs. Used only by the experimental heating_setpoint number (Fase 2.4). Writing it
+# uses NPWrite + NPExec (RAM only). Verify the register/scaling for your model before
+# enabling this entity. Whole degrees Celsius are assumed.
+REG_HEATING_TEMP = "0x0416"
+
+def berry_enabled(entry) -> bool:
+    """Resolve whether Berry (neopoolcmd.be) commands are enabled for an entry.
+
+    Backward compat (REGEL 0): when the key is absent — i.e. the entry was created
+    before this option existed — default to True so the existing aux1..aux4 switches
+    are NOT silently removed. New entries always carry an explicit value from the
+    config flow, and the OptionsFlow can change it afterwards.
+    """
+    if CONF_BERRY_ENABLED in entry.options:
+        return bool(entry.options[CONF_BERRY_ENABLED])
+    return bool(entry.data.get(CONF_BERRY_ENABLED, True))
+
 
 FILTRATION_MODE_MANUAL = 0
 
@@ -54,6 +85,18 @@ BOOST_MODES = {
     2: "Redox",
 }
 BOOST_MODES_REVERSE = {v: k for k, v in BOOST_MODES.items()}
+
+# NPLight: 0 off, 1 on, 2 toggle, 3 auto, 4 next RGB program.
+# The select exposes the stable selectable modes; toggle (2) and next-program (4)
+# are actions, not states, handled by the switch / a button.
+LIGHT_MODES = {
+    0: "Off",
+    1: "On",
+    3: "Auto",
+}
+LIGHT_MODES_REVERSE = {v: k for k, v in LIGHT_MODES.items()}
+LIGHT_TOGGLE = 2
+LIGHT_NEXT_PROGRAM = 4
 
 PH_STATES = {
     0: "No alarm",

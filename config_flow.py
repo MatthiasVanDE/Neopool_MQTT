@@ -6,11 +6,13 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 
 from .const import (
-    DOMAIN,
-    CONF_MQTT_TOPIC,
+    CONF_BERRY_ENABLED,
     CONF_DEVICE_NAME,
-    DEFAULT_MQTT_TOPIC,
+    CONF_MQTT_TOPIC,
+    DEFAULT_BERRY_ENABLED,
     DEFAULT_DEVICE_NAME,
+    DEFAULT_MQTT_TOPIC,
+    DOMAIN,
 )
 
 
@@ -39,6 +41,9 @@ class NeoPoolMQTTConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 {
                     vol.Required(CONF_DEVICE_NAME, default=DEFAULT_DEVICE_NAME): str,
                     vol.Required(CONF_MQTT_TOPIC, default=DEFAULT_MQTT_TOPIC): str,
+                    vol.Optional(
+                        CONF_BERRY_ENABLED, default=DEFAULT_BERRY_ENABLED
+                    ): bool,
                 }
             ),
             errors=errors,
@@ -48,22 +53,34 @@ class NeoPoolMQTTConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """Get the options flow for this handler."""
-        return NeoPoolMQTTOptionsFlowHandler(config_entry)
+        return NeoPoolMQTTOptionsFlowHandler()
 
 
 class NeoPoolMQTTOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow for NeoPool MQTT Controller."""
+    """Handle options flow for NeoPool MQTT Controller.
 
-    def __init__(self, config_entry):
-        """Initialize options flow."""
-        self.config_entry = config_entry
+    Note: ``config_entry`` is provided by the base class as a property in recent
+    Home Assistant; do NOT assign ``self.config_entry`` here (it is deprecated and
+    breaks on newer cores).
+    """
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        entry = self.config_entry
+        current_berry = entry.options.get(
+            CONF_BERRY_ENABLED,
+            entry.data.get(CONF_BERRY_ENABLED, True),
+        )
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({}),
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_BERRY_ENABLED, default=current_berry
+                    ): bool,
+                }
+            ),
         )

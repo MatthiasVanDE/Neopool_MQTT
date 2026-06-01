@@ -14,6 +14,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
+    EntityCategory,
     UnitOfElectricPotential,
     UnitOfTemperature,
 )
@@ -61,6 +62,15 @@ def _relay_state(idx: int) -> Callable[[dict[str, Any]], str | None]:
         if isinstance(states, list) and len(states) >= idx:
             return "On" if states[idx - 1] == 1 else "Off"
         return None
+
+    return get
+
+
+def _relay_present(name: str) -> Callable[[dict[str, Any]], bool]:
+    """available_fn: the named relay subkey exists (function assigned to a relay)."""
+
+    def get(data: dict[str, Any]) -> bool:
+        return (data.get("Relay") or {}).get(name) is not None
 
     return get
 
@@ -136,6 +146,18 @@ def _filtration_mode(data: dict[str, Any]) -> Any:
     if mode is None:
         return None
     return FILTRATION_MODES.get(mode, f"Unknown ({mode})")
+
+
+def _mb_error_rate(data: dict[str, Any]) -> float | None:
+    """Derived Modbus error rate (%) = (MBRequests - MBNoError) / MBRequests * 100."""
+    conn = data.get("Connection") or {}
+    requests = conn.get("MBRequests")
+    no_error = conn.get("MBNoError")
+    if not isinstance(requests, (int, float)) or not isinstance(no_error, (int, float)):
+        return None
+    if requests <= 0:
+        return None
+    return round((requests - no_error) / requests * 100, 3)
 
 
 SENSORS: tuple[NeoPoolSensorDescription, ...] = (
@@ -288,6 +310,48 @@ SENSORS: tuple[NeoPoolSensorDescription, ...] = (
         value_fn=_on_off("Relay", "Valve"),
     ),
     NeoPoolSensorDescription(
+        key="relay_base",
+        name="Base Pump Relay",
+        icon="mdi:flask-outline",
+        value_fn=_on_off("Relay", "Base"),
+        available_fn=_relay_present("Base"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_redox",
+        name="Redox Relay",
+        icon="mdi:flash",
+        value_fn=_on_off("Relay", "Redox"),
+        available_fn=_relay_present("Redox"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_chlorine",
+        name="Chlorine Relay",
+        icon="mdi:flask-round-bottom",
+        value_fn=_on_off("Relay", "Chlorine"),
+        available_fn=_relay_present("Chlorine"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_conductivity",
+        name="Conductivity Relay",
+        icon="mdi:flash-triangle",
+        value_fn=_on_off("Relay", "Conductivity"),
+        available_fn=_relay_present("Conductivity"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_heating",
+        name="Heating Relay",
+        icon="mdi:radiator",
+        value_fn=_on_off("Relay", "Heating"),
+        available_fn=_relay_present("Heating"),
+    ),
+    NeoPoolSensorDescription(
+        key="relay_uv",
+        name="UV Relay",
+        icon="mdi:weather-sunny",
+        value_fn=_on_off("Relay", "UV"),
+        available_fn=_relay_present("UV"),
+    ),
+    NeoPoolSensorDescription(
         key="device_type",
         name="Device Type",
         icon="mdi:pool",
@@ -361,6 +425,16 @@ SENSORS: tuple[NeoPoolSensorDescription, ...] = (
         value_fn=_path("Connection", "MBNoResponse"),
     ),
     NeoPoolSensorDescription(
+        key="mb_error_rate",
+        name="Modbus Error Rate",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:percent",
+        entity_registry_enabled_default=False,
+        value_fn=_mb_error_rate,
+        available_fn=lambda data: _mb_error_rate(data) is not None,
+    ),
+    NeoPoolSensorDescription(
         key="chlorine_data",
         name="Chlorine",
         state_class=SensorStateClass.MEASUREMENT,
@@ -412,7 +486,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: NeoPoolCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-    async_add_entities(NeoPoolSensor(coordinator, desc) for desc in SENSORS)
+    entities: list[SensorEntity] = [NeoPoolSensor(coordinator, desc) for desc in SENSORS]
+    entities.append(NeoPoolBerryVersionSensor(coordinator))
+    async_add_entities(entities)
 
 
 class NeoPoolSensor(NeoPoolEntity, SensorEntity):
@@ -449,3 +525,27 @@ class NeoPoolSensor(NeoPoolEntity, SensorEntity):
         if self.entity_description.extra_attrs_fn is None:
             return None
         return self.entity_description.extra_attrs_fn(self.coordinator.data)
+
+
+class NeoPoolBerryVersionSensor(NeoPoolEntity, SensorEntity):
+    """Berry driver (neopoolcmd.be) version (Fase 4, diagnostic).
+
+    Populated from the NPVersion RESULT, which the coordinator requests once at
+    setup when the Berry option is enabled. Default-disabled; unavailable on devices
+    without the Berry script (no NPVersion RESULT).
+    """
+
+    _attr_icon = "mdi:script-text"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: NeoPoolCoordinator) -> None:
+        super().__init__(coordinator, "berry_version", "Berry Version")
+
+    @property
+    def native_value(self) -> str | None:
+        return self.coordinator.berry_version
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.berry_version is not None
