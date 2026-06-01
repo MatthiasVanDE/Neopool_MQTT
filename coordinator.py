@@ -100,8 +100,8 @@ class NeoPoolCoordinator:
         powerunit = self.data.get("Powerunit") or {}
         if powerunit.get("Version"):
             info["sw_version"] = powerunit["Version"]
-        if powerunit.get("NodeID"):
-            info["serial_number"] = powerunit["NodeID"]
+        # NodeID is intentionally NOT exposed (sensitive identifier). The stable
+        # device identifier is the mqtt_topic, already set in "identifiers".
         return info
 
     async def async_setup(self) -> None:

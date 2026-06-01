@@ -92,3 +92,16 @@ def test_apply_filtration_onoff(coord):
 def test_apply_aux(coord):
     assert coord._apply_result("NPAux2", "ON") is True
     assert coord.data["Relay"]["Aux"][1] == 1
+
+
+# --- NodeID not exposed (Fase 1.2) ---------------------------------------------
+
+
+def test_nodeid_not_in_device_info(coord):
+    import json
+
+    coord._on_sensor_message(_msg(json.dumps(load_fixture("sensor_full"))))
+    info = coord.device_info
+    assert "serial_number" not in info
+    assert "0xANONYMISED" not in json.dumps(info, default=str)
+    assert info["identifiers"] == {("neopool_mqtt", "SmartPool")}
