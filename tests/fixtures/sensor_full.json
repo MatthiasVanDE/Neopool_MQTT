@@ -1,0 +1,90 @@
+{
+  "Time": "2026-06-01T12:00:00",
+  "NeoPool": {
+    "Time": "2026-06-01T12:00:00",
+    "Type": "OxiLife",
+    "Modules": {
+      "pH": 1,
+      "Redox": 1,
+      "Hydrolysis": 1,
+      "Chlorine": 1,
+      "Conductivity": 1,
+      "Ionization": 1
+    },
+    "Temperature": 26.5,
+    "Powerunit": {
+      "Version": "V1.42",
+      "NodeID": "0xANONYMISED",
+      "5V": 5.01,
+      "12V": 12.03,
+      "24-30V": 28.7,
+      "4-20mA": 4.2
+    },
+    "pH": {
+      "Data": 7.2,
+      "Min": 7.0,
+      "Max": 7.4,
+      "State": 0,
+      "Pump": 1,
+      "FL1": 0,
+      "Tank": 1
+    },
+    "Redox": {
+      "Data": 720,
+      "Setpoint": 750
+    },
+    "Chlorine": {
+      "Data": 1.2,
+      "Setpoint": 1.5
+    },
+    "Conductivity": 85,
+    "Ionization": {
+      "Data": 3,
+      "Setpoint": 5,
+      "Max": 100
+    },
+    "Hydrolysis": {
+      "Data": 60,
+      "Unit": "%",
+      "Setpoint": 70,
+      "Max": 100,
+      "Runtime": {
+        "Total": "P10DT2H30M",
+        "Part": "P1DT1H",
+        "Pol1": "P5DT1H",
+        "Pol2": "P5DT1H",
+        "Changes": 412
+      },
+      "State": "POL1",
+      "Cover": 0,
+      "Boost": 0,
+      "Low": 0,
+      "FL1": 0,
+      "Redox": 1
+    },
+    "Filtration": {
+      "State": 1,
+      "Speed": 2,
+      "Mode": 1
+    },
+    "Light": 0,
+    "Relay": {
+      "State": [1, 0, 0, 1, 0, 0, 0],
+      "Aux": [0, 0, 0, 0],
+      "Acid": 0,
+      "Base": 0,
+      "Redox": 1,
+      "Chlorine": 0,
+      "Conductivity": 0,
+      "Heating": 0,
+      "UV": 0,
+      "Valve": 0
+    },
+    "Connection": {
+      "MBRequests": 100000,
+      "MBNoError": 99950,
+      "MBNoResponse": 50
+    }
+  },
+  "TempUnit": "C"
+}

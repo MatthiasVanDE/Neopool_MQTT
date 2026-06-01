@@ -1,0 +1,35 @@
+{
+  "Time": "2026-06-01T12:00:00",
+  "NeoPool": {
+    "Time": "2026-06-01T12:00:00",
+    "Type": "OxiLife",
+    "Modules": {
+      "pH": 1,
+      "Redox": 0,
+      "Hydrolysis": 0,
+      "Chlorine": 0,
+      "Conductivity": 0,
+      "Ionization": 0
+    },
+    "Temperature": 24.0,
+    "pH": {
+      "Data": 7.1,
+      "Min": 7.0,
+      "Max": 7.4,
+      "State": 0,
+      "Pump": 0,
+      "FL1": 0,
+      "Tank": 1
+    },
+    "Filtration": {
+      "State": 0,
+      "Speed": 1,
+      "Mode": 0
+    },
+    "Light": 0,
+    "Relay": {
+      "State": [0, 0, 0, 0, 0, 0, 0]
+    }
+  },
+  "TempUnit": "C"
+}
