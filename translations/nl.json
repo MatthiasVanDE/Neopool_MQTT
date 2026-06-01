@@ -6,16 +6,31 @@
         "description": "Configureer je NeoPool controller verbonden via Tasmota MQTT.",
         "data": {
           "device_name": "Apparaatnaam",
-          "mqtt_topic": "Tasmota MQTT Topic"
+          "mqtt_topic": "Tasmota MQTT Topic",
+          "berry_enabled": "Berry NeoPool-commando's geïnstalleerd (neopoolcmd.be)"
         },
         "data_description": {
           "device_name": "Een vriendelijke naam voor je zwembadcontroller (bijv. 'Zwembad', 'Pool').",
-          "mqtt_topic": "Het MQTT topic van je Tasmota apparaat (bijv. 'SmartPool'). Dit moet overeenkomen met de Topic instelling in Tasmota."
+          "mqtt_topic": "Het MQTT topic van je Tasmota apparaat (bijv. 'SmartPool'). Dit moet overeenkomen met de Topic instelling in Tasmota.",
+          "berry_enabled": "Schakel dit alleen in als het Berry-script neopoolcmd.be op de ESP32 is geladen. Het levert de NPAux-commando's; de Aux-schakelaars worden alleen aangemaakt als dit aanstaat."
         }
       }
     },
     "abort": {
       "already_configured": "Dit MQTT topic is al geconfigureerd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "NeoPool MQTT opties",
+        "data": {
+          "berry_enabled": "Berry NeoPool-commando's geïnstalleerd (neopoolcmd.be)"
+        },
+        "data_description": {
+          "berry_enabled": "Schakel in als het Berry-script neopoolcmd.be op de ESP32 is geladen. Inschakelen maakt de Aux-schakelaars aan en vraagt de Berry-versie op; uitschakelen verwijdert de Aux-schakelaars. De integratie wordt herladen wanneer je dit wijzigt."
+        }
+      }
     }
   }
 }

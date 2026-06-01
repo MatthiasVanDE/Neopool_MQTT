@@ -6,16 +6,31 @@
         "description": "Configure your NeoPool controller connected via Tasmota MQTT.",
         "data": {
           "device_name": "Device Name",
-          "mqtt_topic": "Tasmota MQTT Topic"
+          "mqtt_topic": "Tasmota MQTT Topic",
+          "berry_enabled": "Berry NeoPool commands installed (neopoolcmd.be)"
         },
         "data_description": {
           "device_name": "A friendly name for your pool controller (e.g., 'Pool', 'Zwembad').",
-          "mqtt_topic": "The MQTT topic of your Tasmota device (e.g., 'SmartPool'). This must match the Topic setting in Tasmota."
+          "mqtt_topic": "The MQTT topic of your Tasmota device (e.g., 'SmartPool'). This must match the Topic setting in Tasmota.",
+          "berry_enabled": "Enable only if the Berry script neopoolcmd.be is loaded on the ESP32. It provides the NPAux commands; the Aux switches are created only when this is enabled."
         }
       }
     },
     "abort": {
       "already_configured": "This MQTT topic is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "NeoPool MQTT options",
+        "data": {
+          "berry_enabled": "Berry NeoPool commands installed (neopoolcmd.be)"
+        },
+        "data_description": {
+          "berry_enabled": "Enable if the Berry script neopoolcmd.be is loaded on the ESP32. Enabling creates the Aux switches and requests the Berry version; disabling removes the Aux switches. The integration reloads when you change this."
+        }
+      }
     }
   }
 }
