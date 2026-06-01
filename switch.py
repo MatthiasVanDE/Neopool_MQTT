@@ -15,6 +15,7 @@ from .const import (
     DOMAIN,
     FILTRATION_MODES,
     FILTRATION_SPEEDS,
+    berry_enabled,
 )
 from .coordinator import NeoPoolCoordinator
 from .entity import NeoPoolEntity
@@ -30,7 +31,11 @@ async def async_setup_entry(
         NeoPoolFiltrationSwitch(coordinator),
         NeoPoolLightSwitch(coordinator),
     ]
-    entities.extend(NeoPoolAuxSwitch(coordinator, i) for i in range(1, 5))
+    # NPAux<x> only exists when the Berry script neopoolcmd.be is loaded. Only create
+    # the Aux switches when enabled. For entries predating this option the helper
+    # defaults to True, so existing aux1..aux4 entities are preserved (REGEL 0).
+    if berry_enabled(config_entry):
+        entities.extend(NeoPoolAuxSwitch(coordinator, i) for i in range(1, 5))
     async_add_entities(entities)
 
 

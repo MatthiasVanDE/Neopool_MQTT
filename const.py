@@ -5,9 +5,15 @@ MANUFACTURER = "Sugar Valley"
 
 CONF_MQTT_TOPIC = "mqtt_topic"
 CONF_DEVICE_NAME = "device_name"
+# Whether the Berry script neopoolcmd.be is loaded on the ESP32. It provides the
+# NPAux/NPAntiFreeze/NPTimer/NPBackup commands. Aux switches are only created when
+# this is enabled.
+CONF_BERRY_ENABLED = "berry_enabled"
 
 DEFAULT_MQTT_TOPIC = "SmartPool"
 DEFAULT_DEVICE_NAME = "NeoPool"
+# Default for NEW config entries (config flow). Most devices have no Berry script.
+DEFAULT_BERRY_ENABLED = False
 
 TOPIC_TELE_SENSOR = "tele/{}/SENSOR"
 TOPIC_TELE_LWT = "tele/{}/LWT"
@@ -32,6 +38,19 @@ CMD_NPESCAPE = "NPEscape"
 CMD_NPEXEC = "NPExec"
 CMD_NPSAVE = "NPSave"
 CMD_NPAUX = "NPAux"
+
+def berry_enabled(entry) -> bool:
+    """Resolve whether Berry (neopoolcmd.be) commands are enabled for an entry.
+
+    Backward compat (REGEL 0): when the key is absent — i.e. the entry was created
+    before this option existed — default to True so the existing aux1..aux4 switches
+    are NOT silently removed. New entries always carry an explicit value from the
+    config flow, and the OptionsFlow can change it afterwards.
+    """
+    if CONF_BERRY_ENABLED in entry.options:
+        return bool(entry.options[CONF_BERRY_ENABLED])
+    return bool(entry.data.get(CONF_BERRY_ENABLED, True))
+
 
 FILTRATION_MODE_MANUAL = 0
 
