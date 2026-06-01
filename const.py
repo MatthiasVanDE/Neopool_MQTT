@@ -10,8 +10,12 @@ DEFAULT_MQTT_TOPIC = "SmartPool"
 DEFAULT_DEVICE_NAME = "NeoPool"
 
 TOPIC_TELE_SENSOR = "tele/{}/SENSOR"
+TOPIC_TELE_LWT = "tele/{}/LWT"
 TOPIC_STAT_RESULT = "stat/{}/RESULT"
 TOPIC_CMND = "cmnd/{}/{}"
+
+LWT_ONLINE = "Online"
+LWT_OFFLINE = "Offline"
 
 CMD_NPFILTRATION = "NPFiltration"
 CMD_NPFILTRATIONMODE = "NPFiltrationmode"

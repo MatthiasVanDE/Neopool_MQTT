@@ -14,9 +14,12 @@ from .const import (
     DOMAIN,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS_REVERSE,
+    LWT_OFFLINE,
+    LWT_ONLINE,
     MANUFACTURER,
     TOPIC_CMND,
     TOPIC_STAT_RESULT,
+    TOPIC_TELE_LWT,
     TOPIC_TELE_SENSOR,
 )
 
@@ -69,10 +72,17 @@ class NeoPoolCoordinator:
         self.data: dict[str, Any] = {}
         self._unsub_sensor = None
         self._unsub_result = None
+        self._unsub_lwt = None
+        # Data-driven availability: True once we've seen a SENSOR/RESULT message.
         self._available = False
+        # LWT availability: None = unknown, True = Online, False = Offline.
+        # An explicit Offline LWT overrides the data-driven flag.
+        self._lwt_online: bool | None = None
 
     @property
     def available(self) -> bool:
+        if self._lwt_online is False:
+            return False
         return self._available
 
     @property
@@ -97,6 +107,7 @@ class NeoPoolCoordinator:
     async def async_setup(self) -> None:
         sensor_topic = TOPIC_TELE_SENSOR.format(self.mqtt_topic)
         result_topic = TOPIC_STAT_RESULT.format(self.mqtt_topic)
+        lwt_topic = TOPIC_TELE_LWT.format(self.mqtt_topic)
 
         self._unsub_sensor = await mqtt.async_subscribe(
             self.hass, sensor_topic, self._on_sensor_message, 0
@@ -104,9 +115,15 @@ class NeoPoolCoordinator:
         self._unsub_result = await mqtt.async_subscribe(
             self.hass, result_topic, self._on_result_message, 0
         )
+        self._unsub_lwt = await mqtt.async_subscribe(
+            self.hass, lwt_topic, self._on_lwt_message, 0
+        )
 
         _LOGGER.info(
-            "NeoPool MQTT subscribed to %s and %s", sensor_topic, result_topic
+            "NeoPool MQTT subscribed to %s, %s and %s",
+            sensor_topic,
+            result_topic,
+            lwt_topic,
         )
 
     async def async_unload(self) -> None:
@@ -114,6 +131,8 @@ class NeoPoolCoordinator:
             self._unsub_sensor()
         if self._unsub_result:
             self._unsub_result()
+        if self._unsub_lwt:
+            self._unsub_lwt()
 
     async def async_send_command(self, command: str, payload: str = "") -> None:
         topic = TOPIC_CMND.format(self.mqtt_topic, command)
@@ -134,6 +153,27 @@ class NeoPoolCoordinator:
 
         self.data = neopool
         self._available = True
+        async_dispatcher_send(self.hass, self.signal)
+
+    @callback
+    def _on_lwt_message(self, msg) -> None:
+        """Track availability from the Tasmota Last Will (LWT) topic."""
+        payload = msg.payload
+        if isinstance(payload, bytes):
+            payload = payload.decode(errors="ignore")
+        payload = (payload or "").strip()
+
+        if payload == LWT_ONLINE:
+            online = True
+        elif payload == LWT_OFFLINE:
+            online = False
+        else:
+            _LOGGER.debug("Unrecognised LWT payload: %s", payload)
+            return
+
+        if online == self._lwt_online:
+            return
+        self._lwt_online = online
         async_dispatcher_send(self.hass, self.signal)
 
     @callback
