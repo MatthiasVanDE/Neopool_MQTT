@@ -82,10 +82,18 @@ BINARY_SENSORS: tuple[NeoPoolBinarySensorDescription, ...] = (
         icon="mdi:cup-water",
         is_on_fn=_eq(("pH", "Tank"), 0),
     ),
+    # FL1 is een ALARM-bit, geen aanwezigheidsbit: 1 betekent "flowprobleem", 0
+    # betekent "geen flowprobleem". Dit stond tot 18-09-2026 als "pH Flow Detection"
+    # en meldde daardoor het omgekeerde van de werkelijkheid: bij draaiende filtratie
+    # is FL1 nul, dus de sensor stond 'off' terwijl er water stroomde. Geverifieerd op
+    # het referentietoestel: de hydrolysecel produceerde en haar bedrijfsteller liep
+    # door terwijl pH.FL1 en Hydrolysis.FL1 allebei 0 waren. De key blijft "ph_flow"
+    # zodat bestaande entiteiten hun unique_id houden (REGEL 0).
     NeoPoolBinarySensorDescription(
         key="ph_flow",
-        name="pH Flow Detection",
-        icon="mdi:waves",
+        name="pH Flow Alarm",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        icon="mdi:waves-arrow-up",
         is_on_fn=_eq(("pH", "FL1"), 1),
     ),
     NeoPoolBinarySensorDescription(
