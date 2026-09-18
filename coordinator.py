@@ -3,15 +3,20 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components import mqtt
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     BOOST_MODES_REVERSE,
+    CMD_NPEXEC,
+    CMD_NPREAD,
     CMD_NPVERSION,
+    CMD_NPWRITE,
     DOMAIN,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS_REVERSE,
@@ -20,6 +25,20 @@ from .const import (
     LWT_OFFLINE,
     LWT_ONLINE,
     MANUFACTURER,
+    configured_interval_speed,
+    cover_closed_from_input,
+    filtration_speed_from_relays,
+    filtration_speed_relay_bits,
+    MASK_FILTRATION_CONF_INT1_SPEED,
+    REG_INPUT_STATUS,
+    REG_PAR_FILTRATION_CONF,
+    REG_RELAY_STATE,
+    SHIFT_FILTRATION_CONF_INT1_SPEED,
+    REGISTER_BLOCKS,
+    REGISTER_BLOCKS_FAST,
+    REGISTER_BLOCKS_STATIC,
+    REGISTER_POLL_FAST_SECONDS,
+    REGISTER_POLL_INTERVAL_MINUTES,
     TOPIC_CMND,
     TOPIC_STAT_RESULT,
     TOPIC_TELE_LWT,
@@ -77,6 +96,14 @@ class NeoPoolCoordinator:
         # Berry driver version (from NPVersion RESULT); not present in SENSOR JSON.
         self.berry_version: str | None = None
         self.data: dict[str, Any] = {}
+        # Raw Modbus registers read with NPRead, keyed by address. Everything the
+        # SENSOR JSON does not carry (backwash valve, smart/intelligent mode, ...)
+        # lives here; see const.REGISTER_BLOCKS.
+        self.registers: dict[int, int] = {}
+        # Guards the one-shot re-request in _on_sensor_message.
+        self._registers_requested = False
+        self._unsub_poll = None
+        self._unsub_poll_fast = None
         self._unsub_sensor = None
         self._unsub_result = None
         self._unsub_lwt = None
@@ -138,7 +165,36 @@ class NeoPoolCoordinator:
         if self.berry_enabled:
             await self.async_send_command(CMD_NPVERSION)
 
+        # NPRead is part of the stock Tasmota NeoPool driver, so this needs no Berry
+        # script. Arm the polls *before* the first read: at startup this integration
+        # can be set up before the MQTT client finishes connecting, and a first read
+        # that goes nowhere must not cost us the periodic refresh as well.
+        self._unsub_poll = async_track_time_interval(
+            self.hass,
+            self._async_poll_registers,
+            timedelta(minutes=REGISTER_POLL_INTERVAL_MINUTES),
+        )
+        # The speed lines are live state, not configuration: polling them every five
+        # minutes would make the speed sensor useless.
+        self._unsub_poll_fast = async_track_time_interval(
+            self.hass,
+            self._async_poll_registers_fast,
+            timedelta(seconds=REGISTER_POLL_FAST_SECONDS),
+        )
+        try:
+            await self.async_refresh_registers(include_static=True)
+            await self.async_refresh_registers(REGISTER_BLOCKS_FAST)
+        except Exception:  # noqa: BLE001 - never fail setup over a first read
+            _LOGGER.debug(
+                "NeoPool: initial register read failed, retrying on the next poll",
+                exc_info=True,
+            )
+
     async def async_unload(self) -> None:
+        if self._unsub_poll:
+            self._unsub_poll()
+        if self._unsub_poll_fast:
+            self._unsub_poll_fast()
         if self._unsub_sensor:
             self._unsub_sensor()
         if self._unsub_result:
@@ -150,6 +206,103 @@ class NeoPoolCoordinator:
         topic = TOPIC_CMND.format(self.mqtt_topic, command)
         _LOGGER.debug("NeoPool MQTT publish: %s = %s", topic, payload)
         await mqtt.async_publish(self.hass, topic, str(payload), 0, False)
+
+    async def _async_poll_registers(self, _now: Any = None) -> None:
+        """Interval callback: refresh the configuration registers."""
+        await self.async_refresh_registers()
+
+    async def _async_poll_registers_fast(self, _now: Any = None) -> None:
+        """Interval callback: refresh the live state registers."""
+        await self.async_refresh_registers(REGISTER_BLOCKS_FAST)
+
+    async def async_refresh_registers(
+        self,
+        blocks: tuple[tuple[int, int], ...] | None = None,
+        include_static: bool = False,
+    ) -> None:
+        """Request register blocks with NPRead; answers arrive on stat/.../RESULT."""
+        todo = list(REGISTER_BLOCKS if blocks is None else blocks)
+        if include_static:
+            todo += list(REGISTER_BLOCKS_STATIC)
+        for address, count in todo:
+            await self.async_send_command(CMD_NPREAD, f"0x{address:04X} {count}")
+
+    async def async_write_register(self, address: int, value: int) -> None:
+        """Write one register and read it back.
+
+        NPWrite lands in RAM and NPExec activates it; nothing is written to EEPROM
+        (that is what the "Save to EEPROM" button is for), so a panel power cycle
+        reverts the change. The read-back means entities show what the panel really
+        stored instead of what we hoped it would store.
+        """
+        await self.async_send_command(CMD_NPWRITE, f"0x{address:04X} {value}")
+        await self.async_send_command(CMD_NPEXEC)
+        await self.async_send_command(CMD_NPREAD, f"0x{address:04X} 1")
+
+    @property
+    def filtration_speed(self) -> int | None:
+        """Speed (1..3) the panel is really driving, from the relay lines."""
+        return filtration_speed_from_relays(self.registers.get(REG_RELAY_STATE))
+
+    @property
+    def filtration_speed_bits(self) -> int | None:
+        """The raw speed lines (0..7), for diagnosing an unfamiliar pump wiring."""
+        return filtration_speed_relay_bits(self.registers.get(REG_RELAY_STATE))
+
+    @property
+    def cover_closed(self) -> bool | None:
+        """Pool cover, read from the undocumented input mirror at 0x0062."""
+        return cover_closed_from_input(self.registers.get(REG_INPUT_STATUS))
+
+    @property
+    def configured_speed(self) -> int | None:
+        """Speed (1..3) configured for filtration timer interval 1."""
+        return configured_interval_speed(self.registers.get(REG_PAR_FILTRATION_CONF))
+
+    async def async_set_interval_speed(self, speed: int) -> None:
+        """Set the speed for filtration timer interval 1 (1..3).
+
+        This is the field that actually governs the pump while a filtration timer
+        is running; NPFiltrationspeed only writes the default speed, which applies
+        outside the intervals. Only the speed bits are touched, so the pump type and
+        the default speed are left exactly as the panel has them.
+        """
+        current = self.registers.get(REG_PAR_FILTRATION_CONF)
+        if current is None:
+            _LOGGER.warning(
+                "NeoPool: filtration config register not read yet, cannot set speed"
+            )
+            return
+        value = (current & ~MASK_FILTRATION_CONF_INT1_SPEED) | (
+            (speed - 1) << SHIFT_FILTRATION_CONF_INT1_SPEED
+        )
+        await self.async_write_register(REG_PAR_FILTRATION_CONF, value)
+
+    def register(self, address: int) -> int | None:
+        """One 16-bit register, or None if it has not been read yet."""
+        return self.registers.get(address)
+
+    def register_long(self, address: int) -> int | None:
+        """A 32-bit value stored as low word first, as the panel does."""
+        low = self.registers.get(address)
+        high = self.registers.get(address + 1)
+        if low is None or high is None:
+            return None
+        return low | (high << 16)
+
+    def register_string(self, address: int, count: int) -> str | None:
+        """An ASCIIZ string packed two characters per register, high byte first."""
+        raw = bytearray()
+        for offset in range(count):
+            value = self.registers.get(address + offset)
+            if value is None:
+                return None
+            raw += bytes(((value >> 8) & 0xFF, value & 0xFF))
+        text = raw.split(b"\x00")[0]
+        try:
+            return text.decode("ascii").strip() or None
+        except UnicodeDecodeError:
+            return None
 
     @callback
     def _on_sensor_message(self, msg) -> None:
@@ -165,6 +318,17 @@ class NeoPoolCoordinator:
 
         self.data = neopool
         self._available = True
+
+        # Self-heal: telemetry is flowing but no register answer ever arrived - most
+        # likely the reads at setup were published before MQTT was connected. Ask
+        # again now rather than leaving the register entities unavailable until the
+        # next slow poll (or forever, if the static block was the one that was lost).
+        if self.hass is not None and not self.registers and not self._registers_requested:
+            self._registers_requested = True
+            self.hass.async_create_task(
+                self.async_refresh_registers(include_static=True)
+            )
+
         async_dispatcher_send(self.hass, self.signal)
 
     @callback
@@ -205,8 +369,33 @@ class NeoPoolCoordinator:
             self._available = True
             async_dispatcher_send(self.hass, self.signal)
 
+    def _apply_register_read(self, value: Any) -> bool:
+        """Cache an {"Address": a, "Data": [...]} answer from NPRead."""
+        if not isinstance(value, dict):
+            return False
+        address = value.get("Address")
+        data = value.get("Data")
+        if not isinstance(address, int) or isinstance(address, bool):
+            return False
+        if isinstance(data, int) and not isinstance(data, bool):
+            data = [data]
+        if not isinstance(data, list):
+            return False
+
+        changed = False
+        for offset, item in enumerate(data):
+            if not isinstance(item, int) or isinstance(item, bool):
+                continue
+            if self.registers.get(address + offset) != item:
+                self.registers[address + offset] = item
+                changed = True
+        return changed
+
     def _apply_result(self, key: str, value: Any) -> bool:
         """Update local state for a single command result. Returns True if changed."""
+        if key == "NPRead":
+            return self._apply_register_read(value)
+
         if key == "NPVersion":
             self.berry_version = str(value)
             return True

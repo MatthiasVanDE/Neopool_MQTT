@@ -42,13 +42,17 @@ CONTRACT = {
 def _current_keys() -> set[str]:
     keys = {d.key for d in sensor.SENSORS}
     keys.add("berry_version")
+    keys |= {d.key for d in sensor.REGISTER_SENSORS}
     keys |= {d.key for d in binary.BINARY_SENSORS}
+    keys |= {d.key for d in binary.REGISTER_BINARY_SENSORS}
     keys |= {d.key for d in number.NUMBERS}
+    keys |= {d.key for d in number.REGISTER_NUMBERS}
     keys.add("heating_setpoint")
     keys |= {d.key for d in button.BUTTONS}
     # class-based switch + select keys (constructed in __init__)
     keys |= {"filtration", "light", "aux1", "aux2", "aux3", "aux4"}
     keys |= {"filtration_mode", "filtration_speed", "boost_mode", "light_mode"}
+    keys.add("filtration_interval_speed")
     return keys
 
 
@@ -58,6 +62,21 @@ def test_no_existing_key_removed():
 
 
 def test_no_duplicate_keys_within_platform():
-    for descs in (sensor.SENSORS, binary.BINARY_SENSORS, number.NUMBERS, button.BUTTONS):
+    for descs in (
+        sensor.SENSORS + sensor.REGISTER_SENSORS,
+        binary.BINARY_SENSORS + binary.REGISTER_BINARY_SENSORS,
+        number.NUMBERS + number.REGISTER_NUMBERS,
+        button.BUTTONS,
+    ):
         keys = [d.key for d in descs]
         assert len(keys) == len(set(keys)), f"duplicate keys: {keys}"
+
+
+def test_register_keys_do_not_collide_with_the_contract():
+    """New register-backed entities must not reuse an existing key."""
+    new_keys = (
+        {d.key for d in sensor.REGISTER_SENSORS}
+        | {d.key for d in binary.REGISTER_BINARY_SENSORS}
+        | {d.key for d in number.REGISTER_NUMBERS}
+    )
+    assert not (new_keys & CONTRACT), sorted(new_keys & CONTRACT)

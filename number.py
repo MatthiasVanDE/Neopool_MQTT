@@ -11,7 +11,7 @@ from homeassistant.components.number import (
     NumberMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import EntityCategory, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -26,6 +26,13 @@ from .const import (
     CMD_NPWRITE,
     DOMAIN,
     REG_HEATING_TEMP,
+    REG_PAR_FILTVALVE_INTERVAL,
+    REG_PAR_FILTVALVE_PERIOD_MINUTES,
+    REG_PAR_INTELLIGENT_FILT_MIN_TIME,
+    REG_PAR_INTELLIGENT_TEMP,
+    REG_PAR_RELAY_MAX_TIME,
+    REG_PAR_SMART_TEMP_HIGH,
+    REG_PAR_SMART_TEMP_LOW,
 )
 from .coordinator import NeoPoolCoordinator
 from .entity import NeoPoolEntity
@@ -141,6 +148,94 @@ NUMBERS: tuple[NeoPoolNumberDescription, ...] = (
 )
 
 
+# --- Register-backed numbers --------------------------------------------------
+# Installer settings that Tasmota does not publish in its SENSOR JSON. Each one
+# reads back from the register cache and writes with NPWrite + NPExec, so the value
+# shown is what the panel stored, not what we asked for. Writes are RAM-only: use
+# the "Save to EEPROM" button to make them survive a power cycle.
+
+
+@dataclass(frozen=True, kw_only=True)
+class NeoPoolRegisterNumberDescription(NumberEntityDescription):
+    """Description of a number entity backed by one raw Modbus register."""
+
+    register: int
+
+
+REGISTER_NUMBERS: tuple[NeoPoolRegisterNumberDescription, ...] = (
+    NeoPoolRegisterNumberDescription(
+        key="smart_temp_high",
+        name="Smart Mode Upper Temperature",
+        register=REG_PAR_SMART_TEMP_HIGH,
+        native_min_value=0,
+        native_max_value=40,
+        native_step=1,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        icon="mdi:thermometer-high",
+    ),
+    NeoPoolRegisterNumberDescription(
+        key="smart_temp_low",
+        name="Smart Mode Lower Temperature",
+        register=REG_PAR_SMART_TEMP_LOW,
+        native_min_value=0,
+        native_max_value=40,
+        native_step=1,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        icon="mdi:thermometer-low",
+    ),
+    NeoPoolRegisterNumberDescription(
+        key="intelligent_temp",
+        name="Intelligent Mode Temperature",
+        register=REG_PAR_INTELLIGENT_TEMP,
+        native_min_value=0,
+        native_max_value=40,
+        native_step=1,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        icon="mdi:thermometer",
+    ),
+    NeoPoolRegisterNumberDescription(
+        key="intelligent_filt_min_time",
+        name="Intelligent Mode Minimum Filtration Time",
+        register=REG_PAR_INTELLIGENT_FILT_MIN_TIME,
+        native_min_value=0,
+        native_max_value=1440,
+        native_step=1,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        icon="mdi:timer-cog-outline",
+    ),
+    NeoPoolRegisterNumberDescription(
+        key="backwash_period",
+        name="Backwash Period",
+        register=REG_PAR_FILTVALVE_PERIOD_MINUTES,
+        native_min_value=0,
+        native_max_value=43200,
+        native_step=1,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        icon="mdi:calendar-clock",
+    ),
+    NeoPoolRegisterNumberDescription(
+        key="backwash_duration",
+        name="Backwash Duration",
+        register=REG_PAR_FILTVALVE_INTERVAL,
+        native_min_value=0,
+        native_max_value=600,
+        native_step=1,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        icon="mdi:valve-open",
+    ),
+    NeoPoolRegisterNumberDescription(
+        key="dosing_pump_max_time",
+        name="Dosing Pump Maximum Run Time",
+        register=REG_PAR_RELAY_MAX_TIME,
+        native_min_value=0,
+        native_max_value=3600,
+        native_step=1,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        icon="mdi:pump-alert",
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -149,6 +244,9 @@ async def async_setup_entry(
     coordinator: NeoPoolCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     entities: list[NumberEntity] = [
         NeoPoolNumber(coordinator, desc) for desc in NUMBERS
+    ]
+    entities += [
+        NeoPoolRegisterNumber(coordinator, desc) for desc in REGISTER_NUMBERS
     ]
     entities.append(NeoPoolHeatingSetpointNumber(coordinator))
     async_add_entities(entities)
@@ -242,3 +340,38 @@ class NeoPoolHeatingSetpointNumber(NeoPoolEntity, NumberEntity):
         await self.coordinator.async_send_command(CMD_NPEXEC)
         self._optimistic_value = degrees
         self.async_write_ha_state()
+
+
+class NeoPoolRegisterNumber(NeoPoolEntity, NumberEntity):
+    """Installer setting stored in one raw Modbus register.
+
+    Reads from the register cache and writes with NPWrite + NPExec (RAM only, no
+    NPSave). Default-disabled and categorised as configuration: these are panel
+    settings, not day-to-day controls.
+    """
+
+    entity_description: NeoPoolRegisterNumberDescription
+    _attr_mode = NumberMode.BOX
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(
+        self,
+        coordinator: NeoPoolCoordinator,
+        description: NeoPoolRegisterNumberDescription,
+    ) -> None:
+        super().__init__(coordinator, description.key, description.name)
+        self.entity_description = description
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.register(self.entity_description.register)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self.coordinator.async_write_register(
+            self.entity_description.register, int(round(value))
+        )

@@ -36,6 +36,7 @@ async def async_setup_entry(
         [
             NeoPoolFiltrationModeSelect(coordinator),
             NeoPoolFiltrationSpeedSelect(coordinator),
+            NeoPoolIntervalSpeedSelect(coordinator),
             NeoPoolBoostModeSelect(coordinator),
             NeoPoolLightModeSelect(coordinator),
         ]
@@ -78,6 +79,18 @@ class NeoPoolFiltrationSpeedSelect(NeoPoolEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
+        """The speed actually being driven, falling back to Tasmota's own value.
+
+        The relay lines are the truth; Tasmota's Speed field misreports pumps whose
+        speed lines are wired additively. Until the relay register has been read
+        once, the reported value is all we have.
+        """
+        actual = FILTRATION_SPEEDS.get(self.coordinator.filtration_speed)
+        if actual is not None:
+            return actual
+        if self.coordinator.filtration_speed_bits is not None:
+            # Register read, but no speed line active: the pump is not being driven.
+            return None
         return FILTRATION_SPEEDS.get(self._get("Filtration", "Speed"))
 
     async def async_select_option(self, option: str) -> None:
@@ -135,3 +148,38 @@ class NeoPoolLightModeSelect(NeoPoolEntity, SelectEntity):
         mode = LIGHT_MODES_REVERSE.get(option)
         if mode is not None:
             await self.coordinator.async_send_command(CMD_NPLIGHT, str(mode))
+
+
+class NeoPoolIntervalSpeedSelect(NeoPoolEntity, SelectEntity):
+    """Pump speed for filtration timer interval 1 (MBF_PAR_FILTRATION_CONF bits 7-9).
+
+    This is the speed the pump actually runs at while a filtration timer interval is
+    active. The Filtration Speed select next to it writes the *default* speed, which
+    the panel only applies outside those intervals - so on a panel that filters on a
+    timer, this is the one that does something.
+
+    Written with NPWrite + NPExec and read straight back, RAM only: a panel power
+    cycle restores whatever its own menu has stored. That is deliberate, because an
+    automation may switch this several times a day and EEPROM wears out.
+    """
+
+    _attr_icon = "mdi:speedometer-medium"
+
+    def __init__(self, coordinator: NeoPoolCoordinator) -> None:
+        super().__init__(
+            coordinator, "filtration_interval_speed", "Filtration Interval Speed"
+        )
+        self._attr_options = list(FILTRATION_SPEEDS.values())
+
+    @property
+    def current_option(self) -> str | None:
+        return FILTRATION_SPEEDS.get(self.coordinator.configured_speed)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.configured_speed is not None
+
+    async def async_select_option(self, option: str) -> None:
+        speed = FILTRATION_SPEEDS_REVERSE.get(option)
+        if speed is not None:
+            await self.coordinator.async_set_interval_speed(speed)
