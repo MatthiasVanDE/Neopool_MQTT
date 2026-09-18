@@ -58,7 +58,7 @@ geen bestaande `key=`-waarde is gewijzigd of verwijderd t.o.v. deze lijst.
 |-----|------------------|------|
 | `ph_alarm` | `_ph_alarm` | pH Alarm |
 | `ph_tank_empty` | `_ph_tank_empty` | pH Tank Empty |
-| `ph_flow` | `_ph_flow` | pH Flow Detection |
+| `ph_flow` | `_ph_flow` | pH Flow Alarm (heette tot 18-09-2026 "pH Flow Detection"; FL1 is een alarmbit) |
 | `hydrolysis_flow_alarm` | `_hydrolysis_flow_alarm` | Hydrolysis Flow Alarm |
 | `hydrolysis_low_alarm` | `_hydrolysis_low_alarm` | Hydrolysis Low Alarm |
 | `cover_active` | `_cover_active` | Cover Active |
