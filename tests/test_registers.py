@@ -353,3 +353,21 @@ def test_no_re_request_once_registers_are_known(coord):
     coord.registers = {0x0062: 0xBE68}
     coord._on_sensor_message(_msg('{"NeoPool": {"Type": "Oxilife"}}'))
     assert coord.hass.tasks == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_all_covers_every_block(coord, monkeypatch):
+    """The self-heal must not forget the fast blocks: the cover lives there."""
+    sent = []
+
+    async def collect(cmd, payload=""):
+        sent.append(payload)
+
+    monkeypatch.setattr(coord, "async_send_command", collect)
+    await coord.async_refresh_all_registers()
+
+    alle = (
+        const.REGISTER_BLOCKS + const.REGISTER_BLOCKS_STATIC + const.REGISTER_BLOCKS_FAST
+    )
+    assert sorted(sent) == sorted(f"0x{a:04X} {n}" for a, n in alle)
+    assert f"0x{const.REG_INPUT_STATUS:04X} 1" in sent

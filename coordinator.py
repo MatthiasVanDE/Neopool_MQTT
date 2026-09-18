@@ -182,8 +182,7 @@ class NeoPoolCoordinator:
             timedelta(seconds=REGISTER_POLL_FAST_SECONDS),
         )
         try:
-            await self.async_refresh_registers(include_static=True)
-            await self.async_refresh_registers(REGISTER_BLOCKS_FAST)
+            await self.async_refresh_all_registers()
         except Exception:  # noqa: BLE001 - never fail setup over a first read
             _LOGGER.debug(
                 "NeoPool: initial register read failed, retrying on the next poll",
@@ -213,6 +212,16 @@ class NeoPoolCoordinator:
 
     async def _async_poll_registers_fast(self, _now: Any = None) -> None:
         """Interval callback: refresh the live state registers."""
+        await self.async_refresh_registers(REGISTER_BLOCKS_FAST)
+
+    async def async_refresh_all_registers(self) -> None:
+        """Every block there is: slow, fast and read-once.
+
+        Used at setup and by the self-heal in _on_sensor_message. Asking only for the
+        slow blocks there would leave the live registers - and with them the pool
+        cover - unavailable until the next fast poll.
+        """
+        await self.async_refresh_registers(include_static=True)
         await self.async_refresh_registers(REGISTER_BLOCKS_FAST)
 
     async def async_refresh_registers(
@@ -325,9 +334,7 @@ class NeoPoolCoordinator:
         # next slow poll (or forever, if the static block was the one that was lost).
         if self.hass is not None and not self.registers and not self._registers_requested:
             self._registers_requested = True
-            self.hass.async_create_task(
-                self.async_refresh_registers(include_static=True)
-            )
+            self.hass.async_create_task(self.async_refresh_all_registers())
 
         async_dispatcher_send(self.hass, self.signal)
 

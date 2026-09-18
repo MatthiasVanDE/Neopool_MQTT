@@ -1,7 +1,9 @@
 """Button platform for NeoPool MQTT Controller."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.config_entries import ConfigEntry
@@ -26,6 +28,7 @@ class NeoPoolButtonDescription(ButtonEntityDescription):
 
     command: str
     payload: str = ""
+    available_fn: Callable[[dict[str, Any]], bool] | None = None
 
 
 BUTTONS: tuple[NeoPoolButtonDescription, ...] = (
@@ -55,6 +58,8 @@ BUTTONS: tuple[NeoPoolButtonDescription, ...] = (
         icon="mdi:skip-next",
         command=CMD_NPLIGHT,
         payload=str(LIGHT_NEXT_PROGRAM),
+        # No lighting relay assigned means NPLight answers Error; do not offer it.
+        available_fn=lambda data: data.get("Light") is not None,
     ),
 )
 
@@ -78,6 +83,14 @@ class NeoPoolButton(NeoPoolEntity, ButtonEntity):
     ) -> None:
         super().__init__(coordinator, description.key, description.name)
         self.entity_description = description
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        if self.entity_description.available_fn is not None:
+            return self.entity_description.available_fn(self.coordinator.data)
+        return True
 
     async def async_press(self) -> None:
         await self.coordinator.async_send_command(

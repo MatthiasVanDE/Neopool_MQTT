@@ -82,8 +82,20 @@ class NeoPoolFiltrationSwitch(_BaseSwitch):
 
 
 class NeoPoolLightSwitch(_BaseSwitch):
+    """Pool light.
+
+    Tasmota only publishes ``Light`` when the panel has a relay assigned to the
+    lighting function (MBF_PAR_LIGHTING_GPIO). Without one, ``NPLight`` answers
+    ``Error`` and the switch can neither read nor set anything - so report
+    unavailable instead of offering a control that silently does nothing.
+    """
+
     def __init__(self, coordinator: NeoPoolCoordinator) -> None:
         super().__init__(coordinator, "light", "Light", CMD_NPLIGHT, icon="mdi:pool")
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._get("Light") is not None
 
     @property
     def is_on(self) -> bool | None:

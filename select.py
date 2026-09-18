@@ -141,6 +141,11 @@ class NeoPoolLightModeSelect(NeoPoolEntity, SelectEntity):
         self._attr_options = list(LIGHT_MODES.values())
 
     @property
+    def available(self) -> bool:
+        # No lighting relay assigned on the panel means no Light key in SENSOR.
+        return super().available and self._get("Light") is not None
+
+    @property
     def current_option(self) -> str | None:
         return LIGHT_MODES.get(self._get("Light"))
 

@@ -36,6 +36,7 @@ class NeoPoolBinarySensorDescription(BinarySensorEntityDescription):
     """Description of a NeoPool binary sensor."""
 
     is_on_fn: Callable[[dict[str, Any]], bool | None]
+    available_fn: Callable[["NeoPoolCoordinator"], bool] | None = None
 
 
 def _ph_alarm(data: dict[str, Any]) -> bool | None:
@@ -126,6 +127,14 @@ BINARY_SENSORS: tuple[NeoPoolBinarySensorDescription, ...] = (
         name="Cover Active",
         icon="mdi:shield-sun",
         is_on_fn=_eq(("Hydrolysis", "Cover"), 1),
+        # This bit lives in the hydrolysis status word and only tracks the cover when
+        # the hydrolysis cover reduction is switched on. With that option disabled it
+        # sits at 0 forever, which reads as a confident "cover open" - so say nothing
+        # instead. Pool Cover Closed reads the cover itself.
+        available_fn=lambda coordinator: bool(
+            (coordinator.register(REG_PAR_HIDRO_COVER_ENABLE) or 0)
+            & MASK_HIDRO_COVER_ENABLE
+        ),
     ),
     NeoPoolBinarySensorDescription(
         key="filtration_running",
@@ -278,6 +287,14 @@ class NeoPoolBinarySensor(NeoPoolEntity, BinarySensorEntity):
     ) -> None:
         super().__init__(coordinator, description.key, description.name)
         self.entity_description = description
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        if self.entity_description.available_fn is not None:
+            return self.entity_description.available_fn(self.coordinator)
+        return True
 
     @property
     def is_on(self) -> bool | None:
