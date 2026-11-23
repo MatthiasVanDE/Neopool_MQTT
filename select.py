@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -15,6 +16,7 @@ from .const import (
     CMD_NPFILTRATIONSPEED,
     CMD_NPLIGHT,
     DOMAIN,
+    FILTRATION_MODE_MANUAL,
     FILTRATION_MODES,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS,
@@ -92,6 +94,18 @@ class NeoPoolFiltrationSpeedSelect(NeoPoolEntity, SelectEntity):
             # Register read, but no speed line active: the pump is not being driven.
             return None
         return FILTRATION_SPEEDS.get(self._get("Filtration", "Speed"))
+
+    @property
+    def available(self) -> bool:
+        """Unavailable while a filtration timer interval is driving the pump.
+
+        The default speed field applies only outside those intervals, so during one
+        this control writes a value the panel will not act on - and because it reads
+        back the speed the pump is actually running, it shows exactly what the
+        interval speed next to it shows. Greying it out is what makes the difference
+        between the two visible instead of confusing.
+        """
+        return super().available and not self.coordinator.timer_interval_driving
 
     async def async_select_option(self, option: str) -> None:
         speed = FILTRATION_SPEEDS_REVERSE.get(option)
@@ -182,9 +196,27 @@ class NeoPoolIntervalSpeedSelect(NeoPoolEntity, SelectEntity):
 
     @property
     def available(self) -> bool:
-        return super().available and self.coordinator.configured_speed is not None
+        if not super().available or self.coordinator.configured_speed is None:
+            return False
+        # In Manual mode the panel runs no timer interval at all, so these bits are
+        # never consulted and writing them changes nothing. A mode we have not read
+        # yet is not Manual as far as this is concerned: only grey out on a fact.
+        return self.coordinator.filtration_mode != FILTRATION_MODE_MANUAL
 
     async def async_select_option(self, option: str) -> None:
         speed = FILTRATION_SPEEDS_REVERSE.get(option)
-        if speed is not None:
-            await self.coordinator.async_set_interval_speed(speed)
+        if speed is None:
+            return
+        # An automation that follows the heat pump or the cover rewrites this within
+        # minutes, so a speed set by hand would quietly disappear. Refuse it and name
+        # the automation to switch off first. Only for a person: the automation's own
+        # calls must go through, and they carry no user id.
+        if self.coordinator.speed_controller_on and self._called_by_user():
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="speed_controlled_by_automation",
+                translation_placeholders={
+                    "automation": self.coordinator.speed_controller_name
+                },
+            )
+        await self.coordinator.async_set_interval_speed(speed)

@@ -64,7 +64,7 @@ class NeoPoolSensorDescription(SensorEntityDescription):
     value_fn: Callable[[dict[str, Any]], Any]
     available_fn: Callable[[dict[str, Any]], bool] | None = None
     extra_attrs_fn: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
-    unit_fn: Callable[[dict[str, Any]], str | None] | None = None
+    unit_fn: Callable[["NeoPoolCoordinator"], str | None] | None = None
     # Takes precedence over value_fn: for values that need the raw register cache
     # rather than the SENSOR JSON.
     coordinator_value_fn: Callable[["NeoPoolCoordinator"], Any] | None = None
@@ -159,9 +159,10 @@ def _hydrolysis_extra(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _hydrolysis_unit(data: dict[str, Any]) -> str:
-    unit = (data.get("Hydrolysis") or {}).get("Unit")
-    return unit if unit else PERCENTAGE
+def _hydrolysis_unit(coordinator: NeoPoolCoordinator) -> str:
+    # Debounced in the coordinator: a single telemetry message can carry the wrong
+    # unit, and a unit change suppresses Home Assistant's long-term statistics.
+    return coordinator.hydrolysis_unit
 
 
 def _filtration_speed(data: dict[str, Any]) -> Any:
@@ -831,7 +832,7 @@ class NeoPoolSensor(NeoPoolEntity, SensorEntity):
     @property
     def native_unit_of_measurement(self) -> str | None:
         if self.entity_description.unit_fn is not None:
-            return self.entity_description.unit_fn(self.coordinator.data)
+            return self.entity_description.unit_fn(self.coordinator)
         return self.entity_description.native_unit_of_measurement
 
     @property

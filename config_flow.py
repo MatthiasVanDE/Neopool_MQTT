@@ -4,15 +4,20 @@ from __future__ import annotations
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_BERRY_ENABLED,
     CONF_DEVICE_NAME,
+    CONF_FLOW_REQUIRED_AUX,
     CONF_MQTT_TOPIC,
+    CONF_SPEED_CONTROLLER,
     DEFAULT_BERRY_ENABLED,
     DEFAULT_DEVICE_NAME,
     DEFAULT_MQTT_TOPIC,
     DOMAIN,
+    flow_required_aux,
+    speed_controller,
 )
 
 
@@ -74,13 +79,31 @@ class NeoPoolMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_BERRY_ENABLED,
             entry.data.get(CONF_BERRY_ENABLED, True),
         )
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_BERRY_ENABLED, default=current_berry
-                    ): bool,
-                }
+        current_aux = sorted(flow_required_aux(entry))
+        current_controller = speed_controller(entry)
+
+        schema = {
+            vol.Optional(CONF_BERRY_ENABLED, default=current_berry): bool,
+            vol.Optional(
+                CONF_FLOW_REQUIRED_AUX,
+                default=[str(num) for num in current_aux],
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value=str(num), label=f"Aux {num}")
+                        for num in range(1, 5)
+                    ],
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
             ),
-        )
+            # No default, only a suggestion: an EntitySelector will not validate the
+            # empty string, and leaving the field blank has to be able to mean "none".
+            vol.Optional(
+                CONF_SPEED_CONTROLLER,
+                description={"suggested_value": current_controller or None},
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="automation")
+            ),
+        }
+        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))

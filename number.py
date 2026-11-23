@@ -25,6 +25,8 @@ from .const import (
     CMD_NPREDOX,
     CMD_NPWRITE,
     DOMAIN,
+    FILTRATION_MODE_INTELLIGENT,
+    FILTRATION_MODE_SMART,
     REG_HEATING_TEMP,
     REG_PAR_FILTVALVE_INTERVAL,
     REG_PAR_FILTVALVE_PERIOD_MINUTES,
@@ -46,7 +48,7 @@ class NeoPoolNumberDescription(NumberEntityDescription):
     value_fn: Callable[[dict[str, Any]], Any]
     is_integer: bool = False
     max_fn: Callable[[dict[str, Any]], float] | None = None
-    unit_fn: Callable[[dict[str, Any]], str | None] | None = None
+    unit_fn: Callable[["NeoPoolCoordinator"], str | None] | None = None
     available_fn: Callable[[dict[str, Any]], bool] | None = None
 
 
@@ -62,8 +64,10 @@ def _path(*keys: str) -> Callable[[dict[str, Any]], Any]:
     return get
 
 
-def _hydrolysis_unit(data: dict[str, Any]) -> str:
-    return (data.get("Hydrolysis") or {}).get("Unit") or "%"
+def _hydrolysis_unit(coordinator: NeoPoolCoordinator) -> str:
+    # Debounced in the coordinator: a single telemetry message can carry the wrong
+    # unit, and a unit change suppresses Home Assistant's long-term statistics.
+    return coordinator.hydrolysis_unit
 
 
 def _hydrolysis_max(data: dict[str, Any]) -> float:
@@ -160,11 +164,15 @@ class NeoPoolRegisterNumberDescription(NumberEntityDescription):
     """Description of a number entity backed by one raw Modbus register."""
 
     register: int
+    # Filtration mode the panel has to be in for this parameter to mean anything.
+    # None means it always applies.
+    requires_mode: int | None = None
 
 
 REGISTER_NUMBERS: tuple[NeoPoolRegisterNumberDescription, ...] = (
     NeoPoolRegisterNumberDescription(
         key="smart_temp_high",
+        requires_mode=FILTRATION_MODE_SMART,
         name="Smart Mode Upper Temperature",
         register=REG_PAR_SMART_TEMP_HIGH,
         native_min_value=0,
@@ -175,6 +183,7 @@ REGISTER_NUMBERS: tuple[NeoPoolRegisterNumberDescription, ...] = (
     ),
     NeoPoolRegisterNumberDescription(
         key="smart_temp_low",
+        requires_mode=FILTRATION_MODE_SMART,
         name="Smart Mode Lower Temperature",
         register=REG_PAR_SMART_TEMP_LOW,
         native_min_value=0,
@@ -185,6 +194,7 @@ REGISTER_NUMBERS: tuple[NeoPoolRegisterNumberDescription, ...] = (
     ),
     NeoPoolRegisterNumberDescription(
         key="intelligent_temp",
+        requires_mode=FILTRATION_MODE_INTELLIGENT,
         name="Intelligent Mode Temperature",
         register=REG_PAR_INTELLIGENT_TEMP,
         native_min_value=0,
@@ -195,6 +205,7 @@ REGISTER_NUMBERS: tuple[NeoPoolRegisterNumberDescription, ...] = (
     ),
     NeoPoolRegisterNumberDescription(
         key="intelligent_filt_min_time",
+        requires_mode=FILTRATION_MODE_INTELLIGENT,
         name="Intelligent Mode Minimum Filtration Time",
         register=REG_PAR_INTELLIGENT_FILT_MIN_TIME,
         native_min_value=0,
@@ -277,7 +288,7 @@ class NeoPoolNumber(NeoPoolEntity, NumberEntity):
     @property
     def native_unit_of_measurement(self) -> str | None:
         if self.entity_description.unit_fn is not None:
-            return self.entity_description.unit_fn(self.coordinator.data)
+            return self.entity_description.unit_fn(self.coordinator)
         return self.entity_description.native_unit_of_measurement
 
     @property
@@ -369,7 +380,18 @@ class NeoPoolRegisterNumber(NeoPoolEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        return super().available and self.native_value is not None
+        if not super().available or self.native_value is None:
+            return False
+        # The panel consults the Smart block only in Smart mode and the Intelligent
+        # block only in Intelligent mode; in any other mode these parameters sit
+        # there doing nothing. Mode not read yet does not count as a mismatch.
+        requires = self.entity_description.requires_mode
+        if requires is not None and self.coordinator.filtration_mode not in (
+            None,
+            requires,
+        ):
+            return False
+        return True
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_write_register(

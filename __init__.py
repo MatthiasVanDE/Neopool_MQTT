@@ -6,7 +6,14 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, CONF_MQTT_TOPIC, CONF_DEVICE_NAME, berry_enabled
+from .const import (
+    CONF_DEVICE_NAME,
+    CONF_MQTT_TOPIC,
+    DOMAIN,
+    berry_enabled,
+    flow_required_aux,
+    speed_controller,
+)
 from .coordinator import NeoPoolCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,7 +27,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     device_name = entry.data[CONF_DEVICE_NAME]
 
     coordinator = NeoPoolCoordinator(
-        hass, mqtt_topic, device_name, entry.entry_id, berry_enabled(entry)
+        hass,
+        mqtt_topic,
+        device_name,
+        entry.entry_id,
+        berry_enabled(entry),
+        flow_required_aux=flow_required_aux(entry),
+        speed_controller=speed_controller(entry),
     )
     await coordinator.async_setup()
 

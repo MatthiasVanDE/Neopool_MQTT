@@ -143,3 +143,46 @@ def test_nodeid_not_in_device_info(coord):
     assert "serial_number" not in info
     assert "0xANONYMISED" not in json.dumps(info, default=str)
     assert info["identifiers"] == {("neopool_mqtt", "SmartPool")}
+
+
+# --- Hydrolysis unit is debounced -----------------------------------------------
+
+
+def _hydro(unit, data=60):
+    return _msg('{"NeoPool": {"Hydrolysis": {"Data": %s, "Unit": "%s"}}}' % (data, unit))
+
+
+def test_hydrolysis_unit_defaults_to_percent(coord):
+    assert coord.hydrolysis_unit == "%"
+
+
+def test_hydrolysis_unit_first_report_is_taken(coord):
+    coord._on_sensor_message(_hydro("g/h", "13.5"))
+    assert coord.hydrolysis_unit == "g/h"
+
+
+def test_hydrolysis_unit_single_glitch_is_ignored(coord):
+    # Seen 22-11-2026: an OxiLife set to % reported "g/h" in one message.
+    coord._on_sensor_message(_hydro("%"))
+    coord._on_sensor_message(_hydro("g/h", "60.0"))
+    assert coord.hydrolysis_unit == "%"
+    coord._on_sensor_message(_hydro("%"))
+    coord._on_sensor_message(_hydro("g/h", "60.0"))
+    coord._on_sensor_message(_hydro("g/h", "60.0"))
+    coord._on_sensor_message(_hydro("%"))
+    assert coord.hydrolysis_unit == "%"
+
+
+def test_hydrolysis_unit_lasting_change_is_followed(coord):
+    coord._on_sensor_message(_hydro("%"))
+    for _ in range(coordinator_mod.HYDROLYSIS_UNIT_CONFIRM - 1):
+        coord._on_sensor_message(_hydro("g/h", "13.5"))
+        assert coord.hydrolysis_unit == "%"
+    coord._on_sensor_message(_hydro("g/h", "13.5"))
+    assert coord.hydrolysis_unit == "g/h"
+
+
+def test_hydrolysis_unit_kept_when_message_lacks_it(coord):
+    coord._on_sensor_message(_hydro("g/h", "13.5"))
+    coord._on_sensor_message(_msg('{"NeoPool": {"Type": "OxiLife"}}'))
+    assert coord.hydrolysis_unit == "g/h"

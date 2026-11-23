@@ -9,16 +9,35 @@ CONF_DEVICE_NAME = "device_name"
 # NPAux/NPAntiFreeze/NPTimer/NPBackup commands. Aux switches are only created when
 # this is enabled.
 CONF_BERRY_ENABLED = "berry_enabled"
+# Aux outputs that must never be energised while the filtration pump is off, given
+# as a list of aux numbers (1..4). Which aux that is depends on the installation -
+# on one panel Aux4 drives a heat pump, on another it drives a garden light - so the
+# integration cannot guess it and leaves the interlock off unless it is configured.
+CONF_FLOW_REQUIRED_AUX = "flow_required_aux"
+# Entity id of an automation that drives the filtration interval speed. While that
+# automation is on, a speed set by hand is overwritten within minutes, so the select
+# refuses a change made by a person and says which automation to switch off first.
+CONF_SPEED_CONTROLLER = "speed_controller"
 
 DEFAULT_MQTT_TOPIC = "SmartPool"
 DEFAULT_DEVICE_NAME = "NeoPool"
 # Default for NEW config entries (config flow). Most devices have no Berry script.
 DEFAULT_BERRY_ENABLED = False
+# No interlock and no external speed controller unless configured: an integration
+# that starts refusing commands after an update would be a nasty surprise.
+DEFAULT_FLOW_REQUIRED_AUX: tuple[int, ...] = ()
+DEFAULT_SPEED_CONTROLLER = ""
 
 TOPIC_TELE_SENSOR = "tele/{}/SENSOR"
 TOPIC_TELE_LWT = "tele/{}/LWT"
 TOPIC_STAT_RESULT = "stat/{}/RESULT"
 TOPIC_CMND = "cmnd/{}/{}"
+
+# Tasmota re-derives the hydrolysis unit ("%" or "g/h") from two configuration
+# registers on every telemetry cycle, so one bad Modbus read flips the label for a
+# single message. A new unit is only accepted after this many messages in a row.
+HYDROLYSIS_UNIT_CONFIRM = 3
+UNIT_PERCENT = "%"
 
 LWT_ONLINE = "Online"
 LWT_OFFLINE = "Offline"
@@ -167,7 +186,43 @@ def berry_enabled(entry) -> bool:
     return bool(entry.data.get(CONF_BERRY_ENABLED, True))
 
 
+def flow_required_aux(entry) -> frozenset[int]:
+    """Aux numbers that may not be switched on while filtration is off.
+
+    Stored by the options flow as a list of strings (a multi-select), so coerce.
+    An entry that predates the option has no interlock - see REGEL 0.
+    """
+    raw = entry.options.get(
+        CONF_FLOW_REQUIRED_AUX,
+        entry.data.get(CONF_FLOW_REQUIRED_AUX, DEFAULT_FLOW_REQUIRED_AUX),
+    )
+    if not raw:
+        return frozenset()
+    numbers = set()
+    for value in raw:
+        try:
+            numbers.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return frozenset(numbers)
+
+
+def speed_controller(entry) -> str:
+    """Entity id of the automation that drives the interval speed, or "" if none."""
+    return str(
+        entry.options.get(
+            CONF_SPEED_CONTROLLER,
+            entry.data.get(CONF_SPEED_CONTROLLER, DEFAULT_SPEED_CONTROLLER),
+        )
+        or ""
+    )
+
+
 FILTRATION_MODE_MANUAL = 0
+# Smart and Intelligent each have their own parameter block; the panel only consults
+# a block while it is in that mode.
+FILTRATION_MODE_SMART = 3
+FILTRATION_MODE_INTELLIGENT = 4
 
 FILTRATION_MODES = {
     0: "Manual",

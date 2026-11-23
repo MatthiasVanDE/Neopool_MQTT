@@ -13,6 +13,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     BOOST_MODES_REVERSE,
+    FILTRATION_MODE_MANUAL,
     CMD_NPEXEC,
     CMD_NPREAD,
     CMD_NPVERSION,
@@ -20,6 +21,7 @@ from .const import (
     DOMAIN,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS_REVERSE,
+    HYDROLYSIS_UNIT_CONFIRM,
     LIGHT_MODES_REVERSE,
     LIGHT_TOGGLE,
     LWT_OFFLINE,
@@ -30,8 +32,10 @@ from .const import (
     filtration_speed_from_relays,
     filtration_speed_relay_bits,
     MASK_FILTRATION_CONF_INT1_SPEED,
+    REG_AUX_NAME_LENGTH,
     REG_INPUT_STATUS,
     REG_PAR_FILTRATION_CONF,
+    REG_PAR_UICFG_MACH_NAME_AUX,
     REG_RELAY_STATE,
     SHIFT_FILTRATION_CONF_INT1_SPEED,
     REGISTER_BLOCKS,
@@ -43,6 +47,7 @@ from .const import (
     TOPIC_STAT_RESULT,
     TOPIC_TELE_LWT,
     TOPIC_TELE_SENSOR,
+    UNIT_PERCENT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,12 +92,19 @@ class NeoPoolCoordinator:
         device_name: str,
         entry_id: str,
         berry_enabled: bool = False,
+        flow_required_aux: frozenset[int] | None = None,
+        speed_controller: str = "",
     ) -> None:
         self.hass = hass
         self.mqtt_topic = mqtt_topic
         self.device_name = device_name
         self.entry_id = entry_id
         self.berry_enabled = berry_enabled
+        # Aux outputs that may not run without filtration, and the automation that
+        # owns the interval speed. Both are installation facts the panel cannot tell
+        # us, so they come from the options flow; empty means no interlock.
+        self.flow_required_aux = flow_required_aux or frozenset()
+        self.speed_controller = speed_controller
         # Berry driver version (from NPVersion RESULT); not present in SENSOR JSON.
         self.berry_version: str | None = None
         self.data: dict[str, Any] = {}
@@ -100,6 +112,10 @@ class NeoPoolCoordinator:
         # SENSOR JSON does not carry (backwash valve, smart/intelligent mode, ...)
         # lives here; see const.REGISTER_BLOCKS.
         self.registers: dict[int, int] = {}
+        # Hydrolysis unit as last confirmed; see _track_hydrolysis_unit.
+        self._hydrolysis_unit: str | None = None
+        self._hydrolysis_unit_candidate: str | None = None
+        self._hydrolysis_unit_count = 0
         # Guards the one-shot re-request in _on_sensor_message.
         self._registers_requested = False
         self._unsub_poll = None
@@ -249,6 +265,104 @@ class NeoPoolCoordinator:
         await self.async_send_command(CMD_NPREAD, f"0x{address:04X} 1")
 
     @property
+    def speed_controller_on(self) -> bool:
+        """True while the configured automation owns the filtration interval speed."""
+        if not self.speed_controller or self.hass is None:
+            return False
+        state = self.hass.states.get(self.speed_controller)
+        return state is not None and state.state == "on"
+
+    @property
+    def speed_controller_name(self) -> str:
+        """The controller's friendly name, falling back to its entity id."""
+        if self.hass is not None and self.speed_controller:
+            state = self.hass.states.get(self.speed_controller)
+            if state is not None:
+                return state.attributes.get("friendly_name") or self.speed_controller
+        return self.speed_controller
+
+    @property
+    def filtration_mode(self) -> int | None:
+        """Filtration mode (0 = Manual), or None while no SENSOR message has landed."""
+        mode = (self.data.get("Filtration") or {}).get("Mode")
+        return mode if isinstance(mode, int) and not isinstance(mode, bool) else None
+
+    @property
+    def timer_interval_driving(self) -> bool:
+        """True when a filtration timer interval is what is driving the pump.
+
+        Outside Manual mode the panel starts filtration from its own timer, and while
+        such an interval runs the speed comes from MBF_PAR_FILTRATION_CONF bits 7-9;
+        the default speed field is ignored until the interval ends. An unknown mode
+        counts as "not driving": a control is only greyed out on something we read,
+        never on a guess.
+        """
+        mode = self.filtration_mode
+        if mode is None or mode == FILTRATION_MODE_MANUAL:
+            return False
+        return (self.data.get("Filtration") or {}).get("State") == 1
+
+    @property
+    def filtration_running(self) -> bool | None:
+        """Whether the filtration pump is on, or None if the panel has not said."""
+        state = (self.data.get("Filtration") or {}).get("State")
+        return None if state is None else state == 1
+
+    def aux_on(self, aux_num: int) -> bool | None:
+        """Whether Aux<n> (1..4) is energised, or None if the panel has not said."""
+        aux = (self.data.get("Relay") or {}).get("Aux")
+        if not isinstance(aux, list) or len(aux) < aux_num:
+            return None
+        return aux[aux_num - 1] == 1
+
+    def aux_label(self, aux_num: int) -> str:
+        """"Aux 4", plus the name the panel has for it when that has been read."""
+        label = f"Aux {aux_num}"
+        if 1 <= aux_num <= len(REG_PAR_UICFG_MACH_NAME_AUX):
+            name = self.register_string(
+                REG_PAR_UICFG_MACH_NAME_AUX[aux_num - 1], REG_AUX_NAME_LENGTH
+            )
+            if name:
+                return f"{label} ({name})"
+        return label
+
+    @property
+    def hydrolysis_unit(self) -> str:
+        """Unit of the hydrolysis level and setpoint ("%" or "g/h"), debounced."""
+        return self._hydrolysis_unit or UNIT_PERCENT
+
+    def _track_hydrolysis_unit(self, data: dict[str, Any]) -> None:
+        """Follow Hydrolysis.Unit, but ignore a unit that shows up only briefly.
+
+        Tasmota decides the unit on every cycle from MBF_PAR_UICFG_MACHINE and
+        MBF_PAR_UICFG_MACH_VISUAL_STYLE. A single misread of either flips the label
+        for one message while the value (raw / 10) stays the same; seen on an
+        OxiLife set to %, which reported "g/h" once. Home Assistant reacts to any
+        unit change by suppressing long-term statistics, so a new unit only counts
+        once it has been reported HYDROLYSIS_UNIT_CONFIRM times in a row.
+        """
+        unit = (data.get("Hydrolysis") or {}).get("Unit")
+        if not unit:
+            return
+        if self._hydrolysis_unit is None or unit == self._hydrolysis_unit:
+            self._hydrolysis_unit = unit
+            self._hydrolysis_unit_candidate = None
+            self._hydrolysis_unit_count = 0
+            return
+        if unit == self._hydrolysis_unit_candidate:
+            self._hydrolysis_unit_count += 1
+        else:
+            self._hydrolysis_unit_candidate = unit
+            self._hydrolysis_unit_count = 1
+        if self._hydrolysis_unit_count >= HYDROLYSIS_UNIT_CONFIRM:
+            _LOGGER.info(
+                "Hydrolysis unit changed from %s to %s", self._hydrolysis_unit, unit
+            )
+            self._hydrolysis_unit = unit
+            self._hydrolysis_unit_candidate = None
+            self._hydrolysis_unit_count = 0
+
+    @property
     def filtration_speed(self) -> int | None:
         """Speed (1..3) the panel is really driving, from the relay lines."""
         return filtration_speed_from_relays(self.registers.get(REG_RELAY_STATE))
@@ -326,6 +440,7 @@ class NeoPoolCoordinator:
             return
 
         self.data = neopool
+        self._track_hydrolysis_unit(neopool)
         self._available = True
 
         # Self-heal: telemetry is flowing but no register answer ever arrived - most

@@ -81,6 +81,47 @@ explicitly (it no longer silently forces Manual mode):
 
 The integration does not do raw Modbus writes for filtration.
 
+**It is unavailable while a filtration timer interval is driving the pump.** In
+that window the panel applies the interval's own speed and ignores the default
+field, so the control could only write a value nothing acts on - and because it
+reads back the speed the pump is really running, it showed exactly what the
+**Filtration Interval Speed** select shows. One of the two greying out is what
+makes the difference between them visible.
+
+**Filtration Interval Speed** is in turn unavailable in Manual mode, where the
+panel runs no timer interval at all.
+
+### Interlocks: what a person may not do by hand
+
+Two settings in the integration's Options turn on a refusal. Both are off by
+default, and both refuse **only a call made by a person**:
+
+- **Aux outputs that need filtration** - the aux outputs that must not run while
+  the filtration pump is off, e.g. a heat pump behind the flow switch. Switching
+  the pump off under such an output, or switching one on without filtration, is
+  refused with a message naming the output.
+- **Automation that sets the pump speed** - while that automation is on, setting
+  the interval speed by hand is refused, because the automation overwrites it
+  within minutes. The message names the automation to switch off first.
+
+Both are deliberately *not* implemented by reporting the entity unavailable.
+`entity_service_call` drops an unavailable entity from a service call without
+telling the caller (`homeassistant/helpers/service.py`), so an unavailable
+switch would silently disarm every automation that uses it - including a dry-run
+protection that switches the aux output off. The refusal lives in the command
+instead, and looks at the call's context: a call from the frontend carries a user
+id, an automation leaves it None. One consequence worth knowing: pressing "Run
+actions" on an automation runs its actions with *your* user id, so a hand-run
+automation is refused as if you had pressed the button yourself.
+
+### Smart and Intelligent parameters
+
+The panel consults the Smart parameter block only in Smart mode and the
+Intelligent block only in Intelligent mode. Those numbers are therefore
+unavailable in any other mode - including for reading, which is the price of
+saying "this does nothing right now" through availability. A mode that has not
+been read yet never greys anything out.
+
 ### Light
 
 The original `Light` switch (on/off) is kept. Two extra controls were added:
