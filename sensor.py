@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -18,15 +19,39 @@ from homeassistant.const import (
     UnitOfElectricPotential,
     UnitOfTemperature,
 )
+from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
     FILTRATION_MODES,
     FILTRATION_SPEEDS,
     HYDROLYSIS_STATES,
+    MASK_HIDRO_COVER_REDUCTION,
     PH_STATES,
+    REG_AUX_NAME_LENGTH,
+    REG_HIDRO_SWITCH_VALUE,
+    REG_HIDRO_VOLTAGE,
+    REG_INPUT_STATUS,
+    REG_PAR_FILTVALVE_GPIO,
+    REG_PAR_FILTVALVE_PERIOD_MINUTES,
+    REG_PAR_FILTVALVE_REMAINING,
+    REG_PAR_FILTVALVE_START,
+    REG_PAR_HIDRO_COVER_REDUCTION,
+    REG_PAR_HIDRO_POL0,
+    REG_PAR_HIDRO_POL1,
+    REG_PAR_HIDRO_POL2,
+    REG_PAR_INTELLIGENT_BONUS_TIME,
+    REG_PAR_INTELLIGENT_INTERVALS,
+    REG_PAR_INTELLIGENT_TT_NEXT_INTERVAL,
+    REG_PAR_PUMP_RELAY_TIME_OFF,
+    REG_PAR_PUMP_RELAY_TIME_ON,
+    REG_PAR_SMART_INTERVAL_REDUCTION,
+    REG_PAR_TIME,
+    REG_PAR_UICFG_MACH_NAME_AUX,
+    decode_pump_time,
 )
 from .coordinator import NeoPoolCoordinator
 from .entity import NeoPoolEntity
@@ -39,7 +64,10 @@ class NeoPoolSensorDescription(SensorEntityDescription):
     value_fn: Callable[[dict[str, Any]], Any]
     available_fn: Callable[[dict[str, Any]], bool] | None = None
     extra_attrs_fn: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
-    unit_fn: Callable[[dict[str, Any]], str | None] | None = None
+    unit_fn: Callable[["NeoPoolCoordinator"], str | None] | None = None
+    # Takes precedence over value_fn: for values that need the raw register cache
+    # rather than the SENSOR JSON.
+    coordinator_value_fn: Callable[["NeoPoolCoordinator"], Any] | None = None
 
 
 def _path(*keys: str) -> Callable[[dict[str, Any]], Any]:
@@ -131,14 +159,25 @@ def _hydrolysis_extra(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _hydrolysis_unit(data: dict[str, Any]) -> str:
-    unit = (data.get("Hydrolysis") or {}).get("Unit")
-    return unit if unit else PERCENTAGE
+def _hydrolysis_unit(coordinator: NeoPoolCoordinator) -> str:
+    # Debounced in the coordinator: a single telemetry message can carry the wrong
+    # unit, and a unit change suppresses Home Assistant's long-term statistics.
+    return coordinator.hydrolysis_unit
 
 
 def _filtration_speed(data: dict[str, Any]) -> Any:
     speed = (data.get("Filtration") or {}).get("Speed")
     return FILTRATION_SPEEDS.get(speed, speed)
+
+
+def _filtration_speed_actual(coordinator: NeoPoolCoordinator) -> str | None:
+    """The speed the panel is really driving, decoded from the relay lines.
+
+    Tasmota's own Speed field is unreliable on pumps whose speed lines are wired
+    additively: it only recognises one-hot combinations and silently reports the
+    configured default speed for anything else. See const.filtration_speed_from_relays.
+    """
+    return FILTRATION_SPEEDS.get(coordinator.filtration_speed)
 
 
 def _filtration_mode(data: dict[str, Any]) -> Any:
@@ -280,6 +319,7 @@ SENSORS: tuple[NeoPoolSensorDescription, ...] = (
         icon="mdi:speedometer",
         entity_registry_enabled_default=False,
         value_fn=_filtration_speed,
+        coordinator_value_fn=_filtration_speed_actual,
     ),
     NeoPoolSensorDescription(
         key="filtration_mode_sensor",
@@ -480,6 +520,284 @@ SENSORS: tuple[NeoPoolSensorDescription, ...] = (
 )
 
 
+# --- Register-backed sensors --------------------------------------------------
+# These read NeoPoolCoordinator.registers (filled by NPRead), not the SENSOR JSON.
+
+
+@dataclass(frozen=True, kw_only=True)
+class NeoPoolRegisterSensorDescription(SensorEntityDescription):
+    """Description of a sensor backed by raw Modbus registers."""
+
+    value_fn: Callable[[NeoPoolCoordinator], Any]
+
+
+def _panel_datetime(raw: int | None) -> datetime | None:
+    """Convert a panel timestamp to an aware datetime.
+
+    The panel stores local wall-clock time in a field that looks like a unix
+    timestamp, so the seconds are read as UTC and then labelled with Home
+    Assistant's own timezone. During the DST changeover an hour is ambiguous; that
+    is inherent to how the panel stores time, not something we can resolve here.
+    """
+    if raw is None or raw <= 0:
+        return None
+    wall_clock = datetime(1970, 1, 1) + timedelta(seconds=raw)
+    return wall_clock.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+
+def _reg(address: int) -> Callable[[NeoPoolCoordinator], Any]:
+    def get(coordinator: NeoPoolCoordinator) -> Any:
+        return coordinator.register(address)
+
+    return get
+
+
+def _backwash_last_start(coordinator: NeoPoolCoordinator) -> datetime | None:
+    return _panel_datetime(coordinator.register_long(REG_PAR_FILTVALVE_START))
+
+
+def _backwash_next_start(coordinator: NeoPoolCoordinator) -> datetime | None:
+    """Last cleaning plus the configured period."""
+    last = _backwash_last_start(coordinator)
+    period = coordinator.register(REG_PAR_FILTVALVE_PERIOD_MINUTES)
+    if last is None or not period:
+        return None
+    return last + timedelta(minutes=period)
+
+
+def _panel_time(coordinator: NeoPoolCoordinator) -> datetime | None:
+    return _panel_datetime(coordinator.register_long(REG_PAR_TIME))
+
+
+def _panel_clock_drift(coordinator: NeoPoolCoordinator) -> int | None:
+    """Seconds the panel clock runs ahead of Home Assistant (negative = behind)."""
+    panel = _panel_time(coordinator)
+    if panel is None:
+        return None
+    return round((panel - dt_util.now()).total_seconds())
+
+
+def _cover_reduction(coordinator: NeoPoolCoordinator) -> int | None:
+    value = coordinator.register(REG_PAR_HIDRO_COVER_REDUCTION)
+    if value is None:
+        return None
+    return value & MASK_HIDRO_COVER_REDUCTION
+
+
+def _cover_shutdown_temp(coordinator: NeoPoolCoordinator) -> int | None:
+    value = coordinator.register(REG_PAR_HIDRO_COVER_REDUCTION)
+    if value is None:
+        return None
+    return (value >> 8) & 0xFF
+
+
+def _pump_time(address: int) -> Callable[[NeoPoolCoordinator], int | None]:
+    def get(coordinator: NeoPoolCoordinator) -> int | None:
+        return decode_pump_time(coordinator.register(address))
+
+    return get
+
+
+def _aux_name(index: int) -> Callable[[NeoPoolCoordinator], str | None]:
+    address = REG_PAR_UICFG_MACH_NAME_AUX[index - 1]
+
+    def get(coordinator: NeoPoolCoordinator) -> str | None:
+        return coordinator.register_string(address, REG_AUX_NAME_LENGTH)
+
+    return get
+
+
+_DIAG = {
+    "entity_category": EntityCategory.DIAGNOSTIC,
+    "entity_registry_enabled_default": False,
+}
+
+REGISTER_SENSORS: tuple[NeoPoolRegisterSensorDescription, ...] = (
+    NeoPoolRegisterSensorDescription(
+        key="backwash_remaining",
+        name="Backwash Remaining",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        icon="mdi:valve",
+        value_fn=_reg(REG_PAR_FILTVALVE_REMAINING),
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="backwash_last_start",
+        name="Backwash Last Start",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:valve-open",
+        value_fn=_backwash_last_start,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="backwash_next_start",
+        name="Backwash Next Start",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:calendar-clock",
+        value_fn=_backwash_next_start,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="backwash_relay",
+        name="Backwash Relay",
+        icon="mdi:electric-switch",
+        value_fn=_reg(REG_PAR_FILTVALVE_GPIO),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="input_status_raw",
+        name="Input Status Register",
+        icon="mdi:import",
+        # Hex, because this register is a bit field: bit 8 is the cover, bit 9 the
+        # Aux4 relay, bit 5 follows the pump speed. Useful when the cover misreads.
+        value_fn=lambda coordinator: (
+            None
+            if coordinator.register(REG_INPUT_STATUS) is None
+            else f"0x{coordinator.register(REG_INPUT_STATUS):04X}"
+        ),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="filtration_speed_bits",
+        name="Filtration Speed Relay Lines",
+        icon="mdi:numeric",
+        value_fn=lambda coordinator: coordinator.filtration_speed_bits,
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="cell_pwm",
+        name="Cell PWM Opening",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:sine-wave",
+        value_fn=_reg(REG_HIDRO_SWITCH_VALUE),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="cell_voltage",
+        name="Cell Voltage (raw)",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:flash",
+        value_fn=_reg(REG_HIDRO_VOLTAGE),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="panel_time",
+        name="Panel Clock",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:clock-outline",
+        value_fn=_panel_time,
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="panel_clock_drift",
+        name="Panel Clock Drift",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        icon="mdi:clock-alert-outline",
+        value_fn=_panel_clock_drift,
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="smart_interval_reduction",
+        name="Smart Interval Reduction",
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:percent",
+        value_fn=_reg(REG_PAR_SMART_INTERVAL_REDUCTION),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="intelligent_bonus_time",
+        name="Intelligent Bonus Time",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        icon="mdi:timer-plus-outline",
+        value_fn=_reg(REG_PAR_INTELLIGENT_BONUS_TIME),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="intelligent_next_interval",
+        name="Intelligent Time To Next Interval",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        icon="mdi:timer-sand",
+        value_fn=_reg(REG_PAR_INTELLIGENT_TT_NEXT_INTERVAL),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="intelligent_intervals",
+        name="Intelligent Intervals Started",
+        icon="mdi:counter",
+        value_fn=_reg(REG_PAR_INTELLIGENT_INTERVALS),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="cell_pol_positive_time",
+        name="Cell Positive Polarization Time",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        icon="mdi:swap-horizontal",
+        value_fn=_reg(REG_PAR_HIDRO_POL0),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="cell_pol_negative_time",
+        name="Cell Negative Polarization Time",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        icon="mdi:swap-horizontal",
+        value_fn=_reg(REG_PAR_HIDRO_POL1),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="cell_pol_dead_time",
+        name="Cell Polarization Dead Time",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        icon="mdi:timer-off-outline",
+        value_fn=_reg(REG_PAR_HIDRO_POL2),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="cover_reduction_percent",
+        name="Cover Reduction",
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:shield-sun",
+        value_fn=_cover_reduction,
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="cover_shutdown_temp",
+        name="Hydrolysis Shutdown Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        icon="mdi:thermometer-low",
+        value_fn=_cover_shutdown_temp,
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="dosing_pump_time_on",
+        name="Dosing Pump On Time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        icon="mdi:pump",
+        value_fn=_pump_time(REG_PAR_PUMP_RELAY_TIME_ON),
+        **_DIAG,
+    ),
+    NeoPoolRegisterSensorDescription(
+        key="dosing_pump_time_off",
+        name="Dosing Pump Off Time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        icon="mdi:pump-off",
+        value_fn=_pump_time(REG_PAR_PUMP_RELAY_TIME_OFF),
+        **_DIAG,
+    ),
+    *(
+        NeoPoolRegisterSensorDescription(
+            key=f"aux{i}_name",
+            name=f"Aux {i} Name",
+            icon="mdi:tag-outline",
+            value_fn=_aux_name(i),
+            **_DIAG,
+        )
+        for i in range(1, 5)
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -487,6 +805,9 @@ async def async_setup_entry(
 ) -> None:
     coordinator: NeoPoolCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     entities: list[SensorEntity] = [NeoPoolSensor(coordinator, desc) for desc in SENSORS]
+    entities += [
+        NeoPoolRegisterSensor(coordinator, desc) for desc in REGISTER_SENSORS
+    ]
     entities.append(NeoPoolBerryVersionSensor(coordinator))
     async_add_entities(entities)
 
@@ -504,12 +825,14 @@ class NeoPoolSensor(NeoPoolEntity, SensorEntity):
 
     @property
     def native_value(self) -> Any:
+        if self.entity_description.coordinator_value_fn is not None:
+            return self.entity_description.coordinator_value_fn(self.coordinator)
         return self.entity_description.value_fn(self.coordinator.data)
 
     @property
     def native_unit_of_measurement(self) -> str | None:
         if self.entity_description.unit_fn is not None:
-            return self.entity_description.unit_fn(self.coordinator.data)
+            return self.entity_description.unit_fn(self.coordinator)
         return self.entity_description.native_unit_of_measurement
 
     @property
@@ -549,3 +872,29 @@ class NeoPoolBerryVersionSensor(NeoPoolEntity, SensorEntity):
     @property
     def available(self) -> bool:
         return super().available and self.coordinator.berry_version is not None
+
+
+class NeoPoolRegisterSensor(NeoPoolEntity, SensorEntity):
+    """Sensor backed by a raw Modbus register read with NPRead.
+
+    Unavailable until the register has actually been read, so a device that never
+    answers an NPRead shows "unavailable" rather than a silent "unknown".
+    """
+
+    entity_description: NeoPoolRegisterSensorDescription
+
+    def __init__(
+        self,
+        coordinator: NeoPoolCoordinator,
+        description: NeoPoolRegisterSensorDescription,
+    ) -> None:
+        super().__init__(coordinator, description.key, description.name)
+        self.entity_description = description
+
+    @property
+    def native_value(self) -> Any:
+        return self.entity_description.value_fn(self.coordinator)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None

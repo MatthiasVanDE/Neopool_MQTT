@@ -41,6 +41,22 @@ class NeoPoolEntity(Entity):
     def _handle_update(self) -> None:
         self.async_write_ha_state()
 
+    def _called_by_user(self) -> bool:
+        """Whether the call being handled came from a person, not from automation.
+
+        entity_service_call sets the context on the entity right before the service
+        method runs. A call made from the frontend carries the user id of whoever
+        made it; an automation, script or scene leaves it None. Interlocks use this
+        so they can refuse a hand-made mistake without ever standing in the way of an
+        automation - which matters here, because the dry-run protection switches Aux4
+        off from an automation and must never be blocked.
+
+        Note the one case where a person reads as automation and vice versa: pressing
+        "Run actions" on an automation runs its actions with your user id attached.
+        """
+        context = self._context
+        return context is not None and context.user_id is not None
+
     def _get(self, *path: str) -> Any:
         """Read a nested value from coordinator.data, returning None if missing."""
         data: Any = self.coordinator.data

@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -15,6 +16,7 @@ from .const import (
     CMD_NPFILTRATIONSPEED,
     CMD_NPLIGHT,
     DOMAIN,
+    FILTRATION_MODE_MANUAL,
     FILTRATION_MODES,
     FILTRATION_MODES_REVERSE,
     FILTRATION_SPEEDS,
@@ -36,6 +38,7 @@ async def async_setup_entry(
         [
             NeoPoolFiltrationModeSelect(coordinator),
             NeoPoolFiltrationSpeedSelect(coordinator),
+            NeoPoolIntervalSpeedSelect(coordinator),
             NeoPoolBoostModeSelect(coordinator),
             NeoPoolLightModeSelect(coordinator),
         ]
@@ -78,7 +81,31 @@ class NeoPoolFiltrationSpeedSelect(NeoPoolEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
+        """The speed actually being driven, falling back to Tasmota's own value.
+
+        The relay lines are the truth; Tasmota's Speed field misreports pumps whose
+        speed lines are wired additively. Until the relay register has been read
+        once, the reported value is all we have.
+        """
+        actual = FILTRATION_SPEEDS.get(self.coordinator.filtration_speed)
+        if actual is not None:
+            return actual
+        if self.coordinator.filtration_speed_bits is not None:
+            # Register read, but no speed line active: the pump is not being driven.
+            return None
         return FILTRATION_SPEEDS.get(self._get("Filtration", "Speed"))
+
+    @property
+    def available(self) -> bool:
+        """Unavailable while a filtration timer interval is driving the pump.
+
+        The default speed field applies only outside those intervals, so during one
+        this control writes a value the panel will not act on - and because it reads
+        back the speed the pump is actually running, it shows exactly what the
+        interval speed next to it shows. Greying it out is what makes the difference
+        between the two visible instead of confusing.
+        """
+        return super().available and not self.coordinator.timer_interval_driving
 
     async def async_select_option(self, option: str) -> None:
         speed = FILTRATION_SPEEDS_REVERSE.get(option)
@@ -128,6 +155,11 @@ class NeoPoolLightModeSelect(NeoPoolEntity, SelectEntity):
         self._attr_options = list(LIGHT_MODES.values())
 
     @property
+    def available(self) -> bool:
+        # No lighting relay assigned on the panel means no Light key in SENSOR.
+        return super().available and self._get("Light") is not None
+
+    @property
     def current_option(self) -> str | None:
         return LIGHT_MODES.get(self._get("Light"))
 
@@ -135,3 +167,56 @@ class NeoPoolLightModeSelect(NeoPoolEntity, SelectEntity):
         mode = LIGHT_MODES_REVERSE.get(option)
         if mode is not None:
             await self.coordinator.async_send_command(CMD_NPLIGHT, str(mode))
+
+
+class NeoPoolIntervalSpeedSelect(NeoPoolEntity, SelectEntity):
+    """Pump speed for filtration timer interval 1 (MBF_PAR_FILTRATION_CONF bits 7-9).
+
+    This is the speed the pump actually runs at while a filtration timer interval is
+    active. The Filtration Speed select next to it writes the *default* speed, which
+    the panel only applies outside those intervals - so on a panel that filters on a
+    timer, this is the one that does something.
+
+    Written with NPWrite + NPExec and read straight back, RAM only: a panel power
+    cycle restores whatever its own menu has stored. That is deliberate, because an
+    automation may switch this several times a day and EEPROM wears out.
+    """
+
+    _attr_icon = "mdi:speedometer-medium"
+
+    def __init__(self, coordinator: NeoPoolCoordinator) -> None:
+        super().__init__(
+            coordinator, "filtration_interval_speed", "Filtration Interval Speed"
+        )
+        self._attr_options = list(FILTRATION_SPEEDS.values())
+
+    @property
+    def current_option(self) -> str | None:
+        return FILTRATION_SPEEDS.get(self.coordinator.configured_speed)
+
+    @property
+    def available(self) -> bool:
+        if not super().available or self.coordinator.configured_speed is None:
+            return False
+        # In Manual mode the panel runs no timer interval at all, so these bits are
+        # never consulted and writing them changes nothing. A mode we have not read
+        # yet is not Manual as far as this is concerned: only grey out on a fact.
+        return self.coordinator.filtration_mode != FILTRATION_MODE_MANUAL
+
+    async def async_select_option(self, option: str) -> None:
+        speed = FILTRATION_SPEEDS_REVERSE.get(option)
+        if speed is None:
+            return
+        # An automation that follows the heat pump or the cover rewrites this within
+        # minutes, so a speed set by hand would quietly disappear. Refuse it and name
+        # the automation to switch off first. Only for a person: the automation's own
+        # calls must go through, and they carry no user id.
+        if self.coordinator.speed_controller_on and self._called_by_user():
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="speed_controlled_by_automation",
+                translation_placeholders={
+                    "automation": self.coordinator.speed_controller_name
+                },
+            )
+        await self.coordinator.async_set_interval_speed(speed)

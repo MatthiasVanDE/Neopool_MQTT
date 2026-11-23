@@ -3,8 +3,18 @@ import pytest
 
 from conftest import load_fixture, load_module
 
+coordinator_mod = load_module("coordinator")
 sensor_mod = load_module("sensor")
 binary_sensor_mod = load_module("binary_sensor")
+
+
+def _coordinator_with(data):
+    coord = coordinator_mod.NeoPoolCoordinator(
+        hass=None, mqtt_topic="SmartPool", device_name="Pool", entry_id="abc"
+    )
+    coord.data = data
+    coord._track_hydrolysis_unit(data)
+    return coord
 
 
 @pytest.fixture(params=["sensor_full", "sensor_minimal"])
@@ -18,7 +28,7 @@ def test_all_sensor_value_fns_no_crash(data):
         if desc.available_fn is not None:
             assert desc.available_fn(data) in (True, False)
         if desc.unit_fn is not None:
-            desc.unit_fn(data)
+            assert desc.unit_fn(_coordinator_with(data)) in ("%", "g/h")
         if desc.extra_attrs_fn is not None:
             desc.extra_attrs_fn(data)
 

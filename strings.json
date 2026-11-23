@@ -25,12 +25,27 @@
       "init": {
         "title": "NeoPool MQTT options",
         "data": {
-          "berry_enabled": "Berry NeoPool commands installed (neopoolcmd.be)"
+          "berry_enabled": "Berry NeoPool commands installed (neopoolcmd.be)",
+          "flow_required_aux": "Aux outputs that need filtration",
+          "speed_controller": "Automation that sets the pump speed"
         },
         "data_description": {
-          "berry_enabled": "Enable if the Berry script neopoolcmd.be is loaded on the ESP32. Enabling creates the Aux switches and requests the Berry version; disabling removes the Aux switches. The integration reloads when you change this."
+          "berry_enabled": "Enable if the Berry script neopoolcmd.be is loaded on the ESP32. Enabling creates the Aux switches and requests the Berry version; disabling removes the Aux switches. The integration reloads when you change this.",
+          "flow_required_aux": "Aux outputs that must not run while the filtration pump is off, such as a heat pump behind the flow switch. Switching the pump off, or switching such an output on without filtration, is then refused when you do it by hand. Automations are never blocked, so a dry-run protection keeps working.",
+          "speed_controller": "The automation that drives the filtration interval speed. While it is on, setting the speed by hand is refused, because the automation overwrites it within minutes. Leave empty if nothing controls the speed."
         }
       }
+    }
+  },
+  "exceptions": {
+    "filtration_off_while_aux_runs": {
+      "message": "The filtration pump cannot be switched off by hand while {aux} is running: that dry-runs it. Switch {aux} off first."
+    },
+    "aux_on_without_filtration": {
+      "message": "{aux} cannot be switched on while the filtration pump is off: there is no flow. Start filtration first."
+    },
+    "speed_controlled_by_automation": {
+      "message": "The pump speed is being driven by \"{automation}\", which would overwrite this within minutes. Switch that automation off to set the speed by hand."
     }
   }
 }

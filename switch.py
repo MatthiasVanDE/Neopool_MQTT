@@ -6,6 +6,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -62,10 +63,39 @@ class _BaseSwitch(NeoPoolEntity, SwitchEntity):
 
 
 class NeoPoolFiltrationSwitch(_BaseSwitch):
+    """Filtration pump.
+
+    Switching this off while an aux output that needs flow is running is what dry-runs
+    the equipment behind it, so a person is stopped and told which output to switch off
+    first. Which aux outputs those are is configured (CONF_FLOW_REQUIRED_AUX); with
+    none configured nothing changes.
+
+    Deliberately NOT done by reporting unavailable: entity_service_call drops
+    unavailable entities from a service call without telling the caller, which would
+    silently disarm any automation that switches the pump. The refusal is limited to
+    calls made by a person for the same reason. It is a ServiceValidationError and not
+    a HomeAssistantError: asking for something that is wrong right now is not a
+    failure of the integration, and it should not leave a stack trace in the log.
+    """
+
     def __init__(self, coordinator: NeoPoolCoordinator) -> None:
         super().__init__(
             coordinator, "filtration", "Filtration", CMD_NPFILTRATION, icon="mdi:pump"
         )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        running = [
+            self.coordinator.aux_label(num)
+            for num in sorted(self.coordinator.flow_required_aux)
+            if self.coordinator.aux_on(num)
+        ]
+        if running and self._called_by_user():
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="filtration_off_while_aux_runs",
+                translation_placeholders={"aux": ", ".join(running)},
+            )
+        await super().async_turn_off(**kwargs)
 
     @property
     def is_on(self) -> bool | None:
@@ -82,8 +112,20 @@ class NeoPoolFiltrationSwitch(_BaseSwitch):
 
 
 class NeoPoolLightSwitch(_BaseSwitch):
+    """Pool light.
+
+    Tasmota only publishes ``Light`` when the panel has a relay assigned to the
+    lighting function (MBF_PAR_LIGHTING_GPIO). Without one, ``NPLight`` answers
+    ``Error`` and the switch can neither read nor set anything - so report
+    unavailable instead of offering a control that silently does nothing.
+    """
+
     def __init__(self, coordinator: NeoPoolCoordinator) -> None:
         super().__init__(coordinator, "light", "Light", CMD_NPLIGHT, icon="mdi:pool")
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._get("Light") is not None
 
     @property
     def is_on(self) -> bool | None:
@@ -108,3 +150,25 @@ class NeoPoolAuxSwitch(_BaseSwitch):
         if isinstance(aux, list) and len(aux) >= self._aux_num:
             return aux[self._aux_num - 1] == 1
         return None
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Refuse to energise an aux that needs flow while the pump is off.
+
+        Only when the panel has actually told us filtration is off - not when we have
+        not heard yet - and only for a person. An automation keeps its say: the panel
+        itself interlocks on FL1, and the dry-run automations are the layer that has
+        been tested, so a stale SENSOR message must not be able to block them.
+        """
+        if (
+            self._aux_num in self.coordinator.flow_required_aux
+            and self.coordinator.filtration_running is False
+            and self._called_by_user()
+        ):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="aux_on_without_filtration",
+                translation_placeholders={
+                    "aux": self.coordinator.aux_label(self._aux_num)
+                },
+            )
+        await super().async_turn_on(**kwargs)

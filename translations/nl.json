@@ -25,12 +25,27 @@
       "init": {
         "title": "NeoPool MQTT opties",
         "data": {
-          "berry_enabled": "Berry NeoPool-commando's geïnstalleerd (neopoolcmd.be)"
+          "berry_enabled": "Berry NeoPool-commando's geïnstalleerd (neopoolcmd.be)",
+          "flow_required_aux": "Aux-uitgangen die filtratie nodig hebben",
+          "speed_controller": "Automatisatie die de pompsnelheid stuurt"
         },
         "data_description": {
-          "berry_enabled": "Schakel in als het Berry-script neopoolcmd.be op de ESP32 is geladen. Inschakelen maakt de Aux-schakelaars aan en vraagt de Berry-versie op; uitschakelen verwijdert de Aux-schakelaars. De integratie wordt herladen wanneer je dit wijzigt."
+          "berry_enabled": "Schakel in als het Berry-script neopoolcmd.be op de ESP32 is geladen. Inschakelen maakt de Aux-schakelaars aan en vraagt de Berry-versie op; uitschakelen verwijdert de Aux-schakelaars. De integratie wordt herladen wanneer je dit wijzigt.",
+          "flow_required_aux": "Aux-uitgangen die niet mogen draaien terwijl de filtratiepomp uit staat, bijvoorbeeld een warmtepomp achter de flowswitch. De pomp uitschakelen, of zo'n uitgang inschakelen zonder filtratie, wordt dan geweigerd als je het met de hand doet. Automatisaties worden nooit geblokkeerd, zodat een droogloopbeveiliging blijft werken.",
+          "speed_controller": "De automatisatie die de filtratiesnelheid van het timerinterval stuurt. Zolang die aanstaat, wordt de snelheid met de hand zetten geweigerd, omdat de automatisatie ze binnen enkele minuten overschrijft. Laat leeg als niets de snelheid stuurt."
         }
       }
+    }
+  },
+  "exceptions": {
+    "filtration_off_while_aux_runs": {
+      "message": "De filtratiepomp kan niet met de hand uitgeschakeld worden zolang {aux} draait: die loopt dan droog. Schakel eerst {aux} uit."
+    },
+    "aux_on_without_filtration": {
+      "message": "{aux} kan niet ingeschakeld worden terwijl de filtratiepomp uit staat: er is geen doorstroming. Start eerst de filtratie."
+    },
+    "speed_controlled_by_automation": {
+      "message": "De pompsnelheid wordt gestuurd door \"{automation}\", die dit binnen enkele minuten zou overschrijven. Zet die automatisatie uit om de snelheid met de hand te zetten."
     }
   }
 }
